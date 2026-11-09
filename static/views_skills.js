@@ -87,6 +87,7 @@ async function vRegister() {
   <div class="grid2">
    <div class="card box"><h3><span class="chip dark">1</span> 대표 문서 · 요청</h3>
      <div class="drop" id="drop" onclick="pickFile(sbAdd,true)">초안·기존 문서 1건 이상 (부서 스킬은 3~5건 권장)<br><span class="small">hwp · pptx · docx · html · pdf · txt — DRM 문서는 자동 차단</span></div>
+     <button class="btn ghost sm" style="margin-top:8px" onclick="demoPick(us => { SB.files.push(...us); sbFiles(); }, n => n.startsWith('대표문서/'))">📂 시연 자료(대표 문서 3건)</button>
      <div id="sbf" style="margin-top:10px"></div>
      <input class="in" id="sbReq" style="margin-top:10px" placeholder='예) "영업팀 제안서 팩 만들어줘"' value="${esc(SB.request)}" oninput="SB.request=this.value">
      <div class="row" style="margin-top:8px"><span class="small">범위</span><select class="in" style="width:auto" onchange="SB.scope=this.value">${[['me', '나만 (개인 스킬 · 자동 등록)'], ['team', '우리 팀 (팀장 승인)'], ['dept', '우리 본부 (부서 관리자 승인)']].map(([k, v]) => `<option value="${k}" ${k === SB.scope ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -95,12 +96,20 @@ async function vRegister() {
    <div class="card box" id="sbDraft"><h3><span class="chip dark">3</span> 상속 기반 스킬 초안</h3><p class="muted small">분석하면 전사 공용 스킬(과 가장 가까운 상위 부서 스킬)을 상속한 스킬 폴더 초안이 여기에 나옵니다.</p></div>
   </div>
   <div class="card box" id="sbEval" style="margin-top:14px"><h3><span class="chip dark">4</span> 충분한 검증 <span class="small muted">— 모두 통과해야 등록 버튼이 열립니다</span></h3><p class="muted small">초안이 생기면 대표 문서에서 만든 검증 과제(메모 → 기대 구성·고정 문구·숫자)로 스킬 사용/미사용을 채점합니다.</p></div>
+  <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>이전 작업 이어서 하기 <span class="small muted">분석·검증을 미리 돌려 둔 작업</span></h3>
+  <div id="sbJobs" class="row wrap"></div>
   <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>내 등록·변경 요청</h3>
   ${mine.length ? mine.map(reqCard).join('') : '<div class="card empty small">아직 없습니다.</div>'}`;
+  api('/api/skillgen/jobs').then(j => { const e = $('#sbJobs'); if (e) e.innerHTML = j.jobs.filter(x => x.stage !== 'submitted').map(x => `<button class="btn ghost sm" onclick="sbResume('${x.id}')">${esc(x.name || x.request || x.id)} · ${x.stage === 'evaluated' ? (x.auto_pass ? '검증 통과' : '검증 미통과') : '분석됨'} · ${esc(x.created)}</button>`).join('') || '<span class="small muted">없음</span>'; });
   const dr = $('#drop');
   dr.ondragover = e => { e.preventDefault(); dr.classList.add('on'); }; dr.ondragleave = () => dr.classList.remove('on');
   dr.ondrop = async e => { e.preventDefault(); dr.classList.remove('on'); for (const f of e.dataTransfer.files) await sbAdd(f); };
   sbFiles(); if (SB.analysis) sbAnaHtml(); if (SB.draft) sbDraftHtml(); if (SB.report) sbEvalHtml(); else if (SB.draft) sbEvalIntro();
+}
+async function sbResume(id) {
+  const d = await api('/api/skillgen/' + id);
+  SB = {files: d.job.files, request: '', scope: d.job.scope, job: d.job.id, draft: d.job.draft, analysis: d.job.analysis, report: d.job.report, thumbs: 0, req: null};
+  vRegister(); toast('미리 돌려 둔 작업을 불러왔습니다');
 }
 async function sbAdd(f) { SB.files.push(await upload(f)); sbFiles(); }
 function sbFiles() {
@@ -203,11 +212,12 @@ async function vInspect() {
   $('#main').innerHTML = `<div class="page-h"><div><h2>검수</h2><p>원본 자료(메모·엑셀)와 결과 파일의 <b>값을 대조</b>해 수정 누락을 찾고, 보고 문법·팩 규칙을 함께 봅니다. 사람이 고친 파일을 올려도 됩니다. 고친 뒤 다시 올리면 <b>재검사</b>합니다.</p></div></div>
   <div class="grid2"><div class="card box"><h3><span class="chip dark">1</span> 원본 자료</h3>
      <textarea class="in" rows="5" id="inTxt" placeholder="원본 메모를 붙여 넣거나 파일을 첨부하세요" oninput="IN.text=this.value">${esc(IN.text)}</textarea>
-     <div class="row wrap" style="margin-top:6px"><button class="btn ghost sm" onclick="pickFile(async f=>{IN.src.push(await upload(f));vInspect()},true)">📎 원본 파일</button>${IN.src.map((f, i) => `<span class="chip">${esc(f.name)} <a href="#" onclick="IN.src.splice(${i},1);vInspect();return false">✕</a></span>`).join('')}</div>
+     <div class="row wrap" style="margin-top:6px"><button class="btn ghost sm" onclick="pickFile(async f=>{IN.src.push(await upload(f));vInspect()},true)">📎 원본 파일</button><button class="btn ghost sm" onclick="demoPick(us=>{IN.src.push(...us);vInspect()}, n => n.endsWith('.txt'))">📂 시연 메모</button>${IN.src.map((f, i) => `<span class="chip">${esc(f.name)} <a href="#" onclick="IN.src.splice(${i},1);vInspect();return false">✕</a></span>`).join('')}</div>
      <label class="small" style="margin-top:10px;display:block">또는 내 문서(원본 자료 + 최신 결과 파일을 함께 검사)</label>
      <select class="in" onchange="IN.doc=this.value"><option value="">— 고르지 않음 —</option>${dd.docs.map(x => `<option value="${x.id}" ${x.id === IN.doc ? 'selected' : ''}>${esc(x.title)} v${x.ver}</option>`).join('')}</select></div>
    <div class="card box"><h3><span class="chip dark">2</span> 검사할 파일 <span class="small muted">사람이 고친 PPT·한글 등</span></h3>
      <div class="drop" onclick="pickFile(async f=>{IN.tgt.push(await upload(f));vInspect()},true)">파일 올리기 (pptx · hwp · html · docx · pdf)</div>
+     <button class="btn ghost sm" style="margin-top:6px" onclick="demoPick(us=>{IN.tgt.push(...us);vInspect()}, n => n.startsWith('검수시연'))">📂 시연 자료(사람이 고친 PPT)</button>
      <div style="margin-top:8px">${IN.tgt.map((f, i) => `<div class="out-f row"><span>${f.drm ? '🔐' : '📄'}</span><b class="grow">${esc(f.name)}</b><button class="x" onclick="IN.tgt.splice(${i},1);vInspect()">✕</button></div>`).join('')}</div>
      <label class="small" style="margin-top:10px;display:block">팩 규칙도 함께(선택)</label>
      <select class="in" onchange="IN.tpl=this.value"><option value="">— 보고 문법만 —</option>${TPLS.filter(t => t.skill_info?.id).map(t => `<option value="${t.id}" ${t.id === IN.tpl ? 'selected' : ''}>${esc(t.name)} · ${esc(t.skill_info.id)}</option>`).join('')}</select>
@@ -229,4 +239,63 @@ function inResHtml() {
    ${r.items.sort((a, b) => (a.kind === 'mismatch' ? 0 : 1) - (b.kind === 'mismatch' ? 0 : 1)).map(i => `<tr><td class="small">${esc(i.target)}</td><td><span class="chip ${K[i.kind][1]}">${K[i.kind][0]}</span></td><td>${esc(i.key || '')}</td><td>${esc(i.want || '')}</td><td><b>${esc(i.got || '')}</b></td><td class="small muted">${esc(i.ctx || i.detail)}</td></tr>`).join('') || '<tr><td colspan="6" class="small muted">차이 없음</td></tr>'}</table>
    ${IN.last.rules.map(x => `<div style="margin-top:10px"><b class="small">${esc(x.target)} — 보고 문법·팩 규칙</b>${x.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>`).join('')}
    <p class="small muted" style="margin-top:8px">파일을 고쳐 저장한 뒤 [2]에서 지우고 다시 올려 <b>재검사</b>하세요. 화면 배치(넘침·겹침)는 파일을 열어 확인해야 하며, 이 검사는 파일에서 읽은 값만 봅니다.</p></div>`;
+}
+
+// ───────────── 시연 도우미 ─────────────
+async function demoPick(onPick, filter) {
+  const d = await api('/api/demo/files');
+  if (!d.ready) {
+    if (!confirm('시연용 가상 자료가 아직 없습니다. 지금 만들까요? (한글·PPT 몇 건, 20초 안팎)')) return;
+    await busy('시연용 가상 자료를 만드는 중…', () => api('/api/demo/seed', {body: {}}));
+    return demoPick(onPick, filter);
+  }
+  const fs = d.files.filter(f => !filter || filter(f.name));
+  modal('📂 시연 자료 고르기 <span class="small muted">seed/out — 모두 가상</span>', `
+    ${fs.map((f, i) => `<label class="out-f row" style="cursor:pointer"><input type="checkbox" value="${esc(f.name)}" ${filter && !f.name.includes('수정본') ? 'checked' : ''}><span class="grow">${esc(f.name)}</span><span class="small muted">${kb(f.size)}</span></label>`).join('')}
+    <div class="row" style="margin-top:10px"><button class="btn o" id="dpGo">첨부</button><button class="btn ghost" onclick="demoMake()">자료 다시 만들기</button></div>`);
+  $('#dpGo').onclick = async () => {
+    const names = [...document.querySelectorAll('#mb input:checked')].map(i => i.value);
+    if (!names.length) return toast('파일을 골라 주세요', true);
+    const r = await busy('시연 자료를 읽는 중…', () => api('/api/demo/attach', {body: {names}}));
+    closeModal(); onPick(r.uploads);
+  };
+}
+async function demoMake() { await busy('시연용 가상 자료를 만드는 중…', () => api('/api/demo/seed', {body: {}})); closeModal(); toast('시연 자료를 다시 만들었습니다'); }
+
+const SCENES = [
+  ['0:00', '입력과 문제', 'u1', 'new', '홈에서 「📂 시연 자료」로 고객 세미나 메모를 붙이고 무엇을 만들지 한 줄로 적는다. 상단 띠: 지금 AI(구독 CLI)·지금 망'],
+  ['0:20', '한글 제작', 'u1', 'new', '「기획 요약보고(경영기획팀 기준)」 → 초안 → 한글만 생성 → 미리보기로 □ㅇ- 단계 확인, 받아서 한컴 뷰어로 열기'],
+  ['0:50', 'PPT·웹 제작', 'u1', 'new', '같은 메모로 「영업1팀 고객 제안서」 → PPT·웹 동시 생성 → PPT 미리보기·웹슬라이드 미리보기(회사 소개·서비스 제안 고정 문구)'],
+  ['1:20', '팩 변경 반영', 'u2', 'skills', '김철수 팀장: 스킬 → 영업 팩 → 서비스 제안 문구 고치기 → 변경 요청(PR) → 승인함에서 승인(병합·태그) → 홍길동 문서 「검수 자동 수정」으로 새 문구 반영 → 이전 버전 복구 요청'],
+  ['1:50', '검수·재검사', 'u1', 'inspect', '원본 메모 + 「사람이 고친 PPT(예산 오류)」 → 불일치 120만원≠100만원 → 수정본으로 바꿔 재검사 → 0건'],
+  ['2:15', '★ 팩 스킬 생성', 'u1', 'register', '대표 문서 3건 + "영업팀 제안서 팩 만들어줘" → 분석(하이라이트·상속 사슬) → 검증(사용/미사용) → 👍 → 등록(PR·자동 검사·병합) → 새 문서 화면에 내 양식'],
+  ['2:40', '운영 검증', 'u4', 'skills', '스킬 화면: 전사 공용 스킬 4종이 커밋으로 고정, 잠금 항목. 상단 띠: 본선=구독 CLI, 사내 GPU·Bedrock은 설정 한 줄(승인된 환경에서 검증)'],
+  ['2:50', '마무리', 'u1', 'docs', '문서함: 세 형식 파일·버전·스킬 버전·검수 내역 → 대시보드'],
+];
+let DEMO_T = null;
+async function vDemo() {
+  $('#main').innerHTML = `<div class="page-h"><div><h2>시연 3분 (기획서 19장)</h2><p>장면 버튼을 누르면 그 장면의 사용자로 바꾸고 화면을 엽니다. 시간은 위 초시계로 잽니다.</p></div>
+    <div class="row"><span class="chip dark" id="dmT">0:00</span><button class="btn" onclick="demoTimer()">${DEMO_T ? '■ 멈춤' : '▶ 시작'}</button>
+    <button class="btn" onclick="demoWarm()">🔥 예열</button><button class="btn red" onclick="demoReset()">⟲ 시연 초기화</button></div></div>
+  <div class="card" style="overflow:hidden"><table class="list"><tr><th>시각</th><th>장면</th><th>누가</th><th>할 일</th><th></th></tr>
+  ${SCENES.map(([t, n, u, v, w], i) => `<tr><td><b>${t}</b></td><td><b>${esc(n)}</b></td><td class="small">${esc(({u1: '홍길동 대리', u2: '김철수 팀장', u4: '박지원 부장'})[u])}</td><td class="small">${esc(w)}</td>
+    <td><button class="btn sm o" onclick="demoGo('${u}','${v}')">열기</button></td></tr>`).join('')}</table></div>
+  <p class="small muted" style="margin-top:10px">초기화는 이 PC의 문서·첨부·요청·로그를 비우고 스킬 저장소의 열린 PR을 닫습니다. 병합된 스킬 이력·태그는 남습니다.</p>`;
+}
+async function demoGo(uid, view) { if (ME.user.id !== uid) { await api('/api/login', {body: {uid}}); ME = await api('/api/me'); renderTop(); } go(view); }
+function demoTimer() {
+  if (DEMO_T) { clearInterval(DEMO_T.iv); DEMO_T = null; return vDemo(); }
+  const t0 = Date.now(); DEMO_T = {iv: setInterval(() => { const s = Math.round((Date.now() - t0) / 1000), e = document.getElementById('dmT'); if (e) e.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 500)};
+  vDemo();
+}
+async function demoWarm() {
+  const d = await busy('엔진 3종과 AI를 한 번씩 돌려 예열하는 중…', () => api('/api/demo/warm?ai=1', {body: {}}));
+  toast(`예열 완료 — 한글 ${d.sec.hwp}초 · PPT ${d.sec.ppt}초 · 웹 ${d.sec.web}초` + (d.ai.ok ? ` · AI ${(d.ai.ms / 1000).toFixed(1)}초` : ''));
+}
+async function demoReset() {
+  if (!confirm('시연을 초기화할까요? 이 PC의 문서·첨부·요청·로그를 비우고 열린 PR을 닫습니다.')) return;
+  const us = confirm('시연 중 만든 개인 스킬(skills/user/*)도 저장소에서 정리할까요? (새 커밋으로 지움, 이력·태그는 남음)');
+  await busy('시연 초기화 중… (열린 PR 닫기 포함)', () => api('/api/demo/reset', {body: {user_skills: us}}));
+  ATT = []; SB = {files: [], request: '', scope: 'me', job: null, draft: null, analysis: null, report: null, thumbs: 0, req: null}; IN = {src: [], tgt: [], doc: '', tpl: '', text: '', last: null, prev: null};
+  toast('초기화했습니다'); VIEW = 'demo'; showLogin();
 }

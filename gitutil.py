@@ -11,8 +11,17 @@ class GitError(RuntimeError):
     pass
 
 
+TIMING = os.environ.get('KOSOE_GIT_TIMING') == '1'
+
+
 def run(args, cwd=None, timeout=120, check=True, binary=False):
+    import time as _t
+    t0 = _t.time()
     r = subprocess.run(args, cwd=cwd, capture_output=True, timeout=timeout, env=GIT_ENV)
+    if TIMING:
+        import sys as _s
+        shown = [a for a in args if not a.startswith(('credential', '!gh', 'core.'))][:5]
+        print(f'[git {(_t.time() - t0):5.1f}s] {" ".join(shown)}', file=_s.stderr, flush=True)
     if binary:
         if check and r.returncode != 0:
             raise GitError(f"{' '.join(args[:4])}: {r.stderr.decode('utf-8', 'replace')[-300:]}")

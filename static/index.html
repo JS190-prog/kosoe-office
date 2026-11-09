@@ -278,6 +278,7 @@ function renderTop() {
 const NAV = [
   ['new', '✍️', '새 문서'], ['docs', '🗂️', '문서함'], ['templates', '📐', '양식'], ['skills', '🧩', '스킬'], ['register', '★', '스킬 만들기'],
   ['inspect', '🔍', '검수'], ['approve', '✅', '승인함'], ['inet', '🌐', '인터넷 사용'], ['dash', '📊', '대시보드'], ['audit', '🛡️', '감사 로그'],
+  ['demo', '🎬', '시연 3분'],
 ];
 function renderSide() {
   const r = ME.user.role;
@@ -295,7 +296,7 @@ async function setNet(n) {
 function go(v) {
   charts.forEach(c => c.destroy()); charts = [];
   VIEW = v; renderSide();
-  ({new: vNew, ws: vWs, docs: vDocs, templates: vTemplates, skills: () => vSkills(), register: vRegister, inspect: vInspect, approve: vApprove, inet: vInet, repo: () => vSkills(), dash: vDash, audit: vAudit}[v] || vNew)();
+  ({new: vNew, ws: vWs, docs: vDocs, templates: vTemplates, skills: () => vSkills(), register: vRegister, inspect: vInspect, demo: vDemo, approve: vApprove, inet: vInet, repo: () => vSkills(), dash: vDash, audit: vAudit}[v] || vNew)();
 }
 
 // ───────────── 새 문서 ─────────────
@@ -309,7 +310,7 @@ async function vNew() {
   <div class="ask">
     <textarea id="req" placeholder="예) 3분기 금융영업1팀 실적 결과 보고서 만들어줘. 첨부한 엑셀 숫자를 성과 표에 넣고, 향후 계획은 B증권 제안 중심으로."></textarea>
     <div class="row sp wrap" style="margin-top:8px">
-      <div class="row wrap"><button class="btn ghost sm" onclick="pickFile(f => addAtt(f))">📎 자료 첨부</button><div class="files" id="att"></div></div>
+      <div class="row wrap"><button class="btn ghost sm" onclick="pickFile(f => addAtt(f))">📎 자료 첨부</button><button class="btn ghost sm" onclick="demoPick(us => { ATT.push(...us); renderAtt(); })">📂 시연 자료</button><div class="files" id="att"></div></div>
       <div class="row"><button class="btn ghost" onclick="recommend()">🧭 양식 추천</button><button class="btn o" id="go" onclick="startCompose()" disabled>초안 만들기 →</button></div>
     </div>
   </div>
@@ -353,7 +354,7 @@ function renderAtt() {
 }
 async function recommend() {
   const text = $('#req').value.trim(); if (!text) return toast('먼저 무엇을 만들지 적어 주세요', true);
-  const d = await busy('맞는 템플릿을 찾는 중…', () => api('/api/route', {body: {text}}));
+  const d = await busy('맞는 양식을 찾는 중…', () => api('/api/route', {body: {text}}));
   const t = TPLS.find(x => x.id === d.suggest.template_id);
   $('#rec').innerHTML = t ? `<div class="rec"><img src="/static/kosoe.webp" style="width:44px" alt="">
     <div class="grow"><b>추천: ${esc(t.name)}</b> ${fmtTag(t.fmt)} <span class="chip">${SCOPE[t.scope]}</span><br><span class="small muted">${esc(d.suggest.reason)} · ${aiMeta(d.meta)}</span></div>
@@ -361,7 +362,7 @@ async function recommend() {
   if (t) { selTpl(t.id); document.getElementById('t-' + t.id)?.scrollIntoView({block: 'nearest', behavior: 'smooth'}); }
 }
 async function startCompose() {
-  if (!PICK) return toast('템플릿을 골라 주세요', true);
+  if (!PICK) return toast('양식을 골라 주세요', true);
   const text = $('#req').value.trim();
   const d = await busy('초안을 쓰는 중… (AI가 구성에 맞춰 설계도를 만듭니다)', () =>
     api('/api/compose', {body: {template_id: PICK, request: text, upload_ids: ATT.filter(a => !a.drm).map(a => a.id)}}));
@@ -465,7 +466,7 @@ async function generate() {
 function resHtml(doc) {
   const cur = doc.files.filter(f => f.ver === doc.ver);
   const fixable = cur.some(f => f.checks.some(c => !c.ok && c.fix));
-  return `<div class="row sp"><b>v${doc.ver} 결과</b><span class="small muted">${esc(doc.updated)}</span></div>
+  return `${updBanner(doc)}<div class="row sp"><b>v${doc.ver} 결과</b><span class="small muted">${esc(doc.updated)}</span></div>
    ${cur.map(f => `<div class="out-f" style="margin-top:8px"><div class="row sp">${fmtTag(f.fmt)}<span class="small muted">${(f.ms / 1000).toFixed(1)}초 · ${kb(f.size)}</span></div>
      <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}</div>
      <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>
@@ -474,6 +475,7 @@ function resHtml(doc) {
    ${fixable ? `<button class="btn" style="width:100%;justify-content:center" onclick="autoFix('${doc.id}')">🛠 검수 자동 수정 → 새 버전</button>` : ''}
    <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="openDoc('${doc.id}')">👥 공유 범위 설정</button>`;
 }
+const updBanner = doc => !doc.skill_update ? '' : `<div class="rec" style="margin-bottom:10px;border-color:var(--o)"><span style="font-size:22px">🔔</span><div class="grow"><b>${esc(doc.skill_update.name)}이(가) v${esc(doc.skill_update.current)}으로 바뀌었습니다</b><br><span class="small muted">이 문서는 v${esc(doc.skill_update.used)} 기준으로 만들었습니다. 승인된 새 기준(고정 문구·규칙)으로 다시 만들 수 있습니다.</span></div>${['m', 'w'].includes(doc.perm) || doc.perm === undefined ? `<button class="btn o sm" onclick="autoFix('${doc.id}')">새 기준으로 다시 만들기</button>` : ''}</div>`;
 async function autoFix(id) {
   const d = await busy('날짜·문장 끝·길이·제목을 고치는 중…', () => api(`/api/docs/${id}/fix`, {body: {}}));
   LASTDOC = d.doc;
@@ -507,7 +509,7 @@ async function preview(id, fmt, ver) {
 async function vDocs() {
   const d = await api('/api/docs');
   $('#main').innerHTML = `<div class="page-h"><div><h2>문서함</h2><p>내가 만든 문서와 나에게 공유된 문서. 권한(관리·쓰기·읽기)은 문서마다 다릅니다.</p></div></div>
-  <div class="card" style="overflow:hidden"><table class="list"><tr><th>제목</th><th>템플릿</th><th>형식</th><th>등급</th><th>작성자</th><th>내 권한</th><th>공유</th><th>수정</th></tr>
+  <div class="card" style="overflow:hidden"><table class="list"><tr><th>제목</th><th>양식</th><th>형식</th><th>등급</th><th>작성자</th><th>내 권한</th><th>공유</th><th>수정</th></tr>
   ${d.docs.map(x => `<tr class="click" onclick="openDoc('${x.id}')"><td><b>${esc(x.title)}</b> <span class="small muted">v${x.ver}</span>${x.locked ? ' <span class="chip bad">🔒 인터넷망 잠김</span>' : ''}</td>
     <td class="small">${esc(x.template)}</td><td>${[...new Set(x.files.map(f => f.fmt))].map(fmtTag).join(' ') || fmtTag(x.fmt)}</td><td>${gradeTag(x.grade)}</td>
     <td class="small">${esc(x.owner.name)}<br><span class="muted">${esc(x.owner.team)}</span></td><td><span class="perm ${x.perm}">${PERM[x.perm]}</span></td>
@@ -520,7 +522,7 @@ async function openDoc(id) {
   const x = d.doc, can = x.perm === 'm';
   const vers = [...new Set(x.files.map(f => f.ver))];
   modal(`${esc(x.title)} <span class="small muted">v${x.ver}</span>`, `
-   <div class="row wrap" style="margin-bottom:12px">${gradeTag(x.grade)}<span class="chip">${esc(x.template)}</span><span class="chip">작성 ${esc(x.owner.name)} · ${esc(x.owner.team)}</span><span class="perm ${x.perm}">내 권한: ${PERM[x.perm]}</span>
+   ${updBanner(x)}<div class="row wrap" style="margin-bottom:12px">${gradeTag(x.grade)}<span class="chip">${esc(x.template)}</span><span class="chip">작성 ${esc(x.owner.name)} · ${esc(x.owner.team)}</span><span class="perm ${x.perm}">내 권한: ${PERM[x.perm]}</span>
      ${x.made?.minutes !== undefined ? `<span class="chip ok">⏱ ${x.made.minutes}분 걸림 (손으로 약 ${x.made.manual}분)</span>` : ''}</div>
    <div class="grid2"><div><h4 style="margin-bottom:8px">버전 · 파일</h4>
      ${vers.map(v => `<div class="out-f"><b>v${v}</b> ${x.files.filter(f => f.ver === v).map(f => `<span style="margin-left:8px">${fmtTag(f.fmt)} <a href="/api/docs/${x.id}/file?fmt=${f.fmt}&ver=${v}">받기</a> · <a href="#" onclick="preview('${x.id}','${f.fmt}',${v});return false">보기</a> <span class="small muted">${f.checks.filter(c => !c.ok).length ? '검수 ' + f.checks.filter(c => !c.ok).length + '건' : '검수 통과'}</span></span>`).join('')}</div>`).join('') || '<p class="muted small">파일 없음</p>'}

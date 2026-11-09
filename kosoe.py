@@ -48,7 +48,8 @@ def main():
         return 0
     if cmd == 'reset-demo':
         import app
-        app.reset_demo()
+        app.sync_forms(force=True)
+        app.reset_demo('--user-skills' in sys.argv)
         print('시연 데이터를 초기화했습니다(로컬 DB·결과물·첨부, 스킬 저장소의 열린 PR).')
         return 0
     if cmd == 'run':

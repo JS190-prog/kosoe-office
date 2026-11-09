@@ -23,15 +23,18 @@ REPO = os.path.join(HOME, 'skills-repo')
 SLUG = CFG['skills_repo']
 _lock = threading.RLock()
 STATE = {'mode': 'none', 'url': '', 'head': '', 'synced': 0, 'error': ''}
+_labels_done = []
 LOCKED_TOP = {'brand', 'fonts', 'logo', 'grade_label', 'hwp_base'}
 SEMVER = re.compile(r'^\d+\.\d+\.\d+$')
 
 
 # ───────────── 동기화 ─────────────
-def ensure(force=False):
-    """로컬 복제본을 준비하고 원격 main을 당겨 온다(기본 60초에 한 번)."""
+def ensure(force=False, max_age=60):
+    """로컬 복제본을 준비하고 원격 main을 당겨 온다(기본 60초에 한 번, force면 max_age초 이내 동기화는 건너뜀)."""
     with _lock:
-        if not force and time.time() - STATE['synced'] < 60 and STATE['head']:
+        age = time.time() - STATE['synced']
+        limit = max_age if (not force or max_age < 60) else 0
+        if STATE['head'] and age < limit:
             return STATE
         try:
             if not os.path.isdir(os.path.join(REPO, '.git')):
@@ -272,15 +275,17 @@ def _commit_files(branch, files, message, requested_by):
 def open_pr(kind, s, files, requested_by, body, scope_label):
     """kind: new | update | revert. 돌려주는 값: {'branch','pr','url'}."""
     with _lock:
-        ensure(force=True)
+        ensure(force=True, max_age=20)
         branch = f"skill/{s['scope']}/{s['id']}/v{s['version']}"
         title = {'new': '스킬 등록', 'update': '스킬 변경', 'revert': '스킬 복구'}[kind] + f": {s['name']} v{s['version']}"
         try:
             _commit_files(branch, files, f"skill({s['scope']}): {s['id']} v{s['version']} — {title}", requested_by)
             if STATE['mode'] != 'github' or not have_gh():
                 return {'branch': branch, 'pr': 0, 'url': ''}
-            for name, color in (('scope:user', '1D76DB'), ('scope:org', 'F26522')):
-                gh('label', 'create', name, '--color', color, '-R', SLUG, check=False)
+            if not _labels_done:
+                for name, color in (('scope:user', '1D76DB'), ('scope:org', 'F26522')):
+                    gh('label', 'create', name, '--color', color, '-R', SLUG, check=False)
+                _labels_done.append(1)
             url = gh('pr', 'create', '-R', SLUG, '--base', 'main', '--head', branch, '--label', scope_label,
                      '--title', title, '--body', body, timeout=120).strip().splitlines()[-1]
             return {'branch': branch, 'pr': int(url.rstrip('/').split('/')[-1]), 'url': url}
@@ -288,9 +293,15 @@ def open_pr(kind, s, files, requested_by, body, scope_label):
             git('checkout', '-q', '-f', 'main', cwd=REPO, check=False)
 
 
-def comment(pr, text):
+def _bg(fn, *a):
+    threading.Thread(target=fn, args=a, daemon=True).start()
+
+
+def comment(pr, text, wait=False):
+    """PR 코멘트(승인 기록). 기본은 뒤에서 보낸다(화면을 기다리게 하지 않음)."""
     if pr and STATE['mode'] == 'github':
-        gh('pr', 'comment', str(pr), '-R', SLUG, '--body', text, check=False)
+        f = lambda: gh('pr', 'comment', str(pr), '-R', SLUG, '--body', text, check=False)
+        f() if wait else _bg(f)
 
 
 def merge(pr, branch, sid, version, approved_by):
@@ -329,8 +340,9 @@ def bump(v, part='minor'):
     return f'{a}.{b + 1}.0' if part == 'minor' else f'{a}.{b}.{c + 1}'
 
 
-def demo_cleanup(keep_prefixes=('skills/org/',)):
-    """시연 초기화: 열린 PR 닫기, 시연 중 만든 개인 스킬·태그는 그대로 두고 로컬 복제본만 정리."""
+def demo_cleanup(user_skills=False):
+    """시연 초기화: 열린 PR을 닫는다. user_skills=True면 시연 중 만든 개인 스킬 폴더(skills/user/*)를
+    새 커밋으로 지운다(이력·태그는 남음)."""
     with _lock:
         if STATE['mode'] == 'github' and have_gh():
             out = gh('pr', 'list', '-R', SLUG, '--state', 'open', '--json', 'number', '-q', '.[].number', check=False)
@@ -338,3 +350,18 @@ def demo_cleanup(keep_prefixes=('skills/org/',)):
                 gh('pr', 'close', n, '-R', SLUG, '--comment', '시연 초기화로 닫음', '--delete-branch', check=False)
         STATE['synced'] = 0
         ensure(force=True)
+        if user_skills:
+            base = os.path.join(REPO, 'skills', 'user')
+            gone = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))] if os.path.isdir(base) else []
+            if gone:
+                for d in gone:
+                    shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+                open(os.path.join(base, '.gitkeep'), 'a').close()
+                who = identity()
+                git('add', '-A', cwd=REPO)
+                git('-c', f"user.name={who['name']}", '-c', f"user.email={who['email']}", 'commit', '-q', '-m',
+                    f"시연 초기화: 개인 스킬 정리 ({', '.join(gone)})", cwd=REPO, check=False)
+                if STATE['mode'] == 'github':
+                    git_remote('push', '-q', 'origin', 'HEAD:main', cwd=REPO, timeout=120, check=False)
+                STATE['synced'] = 0
+                ensure(force=True)

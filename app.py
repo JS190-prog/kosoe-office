@@ -118,10 +118,10 @@ def people_of(u):
 _sync_lock = threading.Lock()
 
 
-def sync_forms(force=False):
+def sync_forms(force=False, max_age=60):
     """스킬 저장소를 당겨 와 양식 카드 캐시(templates 테이블)를 다시 만든다."""
     with _sync_lock:
-        st = skills.ensure(force=force)
+        st = skills.ensure(force=force, max_age=max_age)
         if not skills.STATE['head']:
             return st
         con = db()
@@ -187,7 +187,21 @@ def doc_view(d, u, full=False):
     if full:
         o['blueprint'] = J(d['blueprint'], {})
         o['made'] = J(d['made'], {})
+        o['skill_update'] = _skill_update(d, fs)
     return o
+
+
+def _skill_update(d, fs):
+    """문서를 만들 때 쓴 스킬 버전보다 승인된 새 버전이 있으면 알려 준다(다음 문서부터 반영 → 이 문서는 다시 만들면 반영)."""
+    t = row(g.con, 'select skill from templates where id=?', d['template_id'])
+    info = (J(t['skill'], {}) or {}) if t else {}
+    if not info.get('id') or not fs:
+        return None
+    last = J(fs[0]['resolution'], {}).get('skills') or []
+    used = next((x.split('@', 1)[1] for x in last if x.startswith(info['id'] + '@')), '')
+    if used and used != info.get('version'):
+        return {'id': info['id'], 'name': info.get('name') or info['id'], 'used': used, 'current': info.get('version')}
+    return None
 
 
 def _shots(doc_id, ver):
@@ -790,7 +804,7 @@ def _report_md(rep):
 @login_required
 def skill_change(sid):
     """팩 변경(고정 문구·규칙·검수 규칙) → 버전 올림 → PR → 승인 후 다음 문서부터 반영."""
-    skills.ensure(force=True)
+    skills.ensure(force=True, max_age=20)
     allsk = skills.all_skills()
     s = allsk.get(sid)
     if not s:
@@ -818,7 +832,7 @@ def skill_change(sid):
 @login_required
 def skill_revert(sid):
     """이전 승인 버전(태그)의 내용으로 되돌리는 PR. 버전 번호는 앞으로(패치)."""
-    skills.ensure(force=True)
+    skills.ensure(force=True, max_age=20)
     allsk = skills.all_skills()
     s = allsk.get(sid)
     if not s:
@@ -922,7 +936,8 @@ def skillgen_analyze():
     sid = _slug(base['id'] if base else fmt, g.u['id'])
     blocks = []
     for x in out.get('fixed') or []:
-        t = re.sub(r'^\s*[(\[]([^)\]]{1,8})[)\]]\s*', '', str(x.get('text') or '')).strip()
+        t = re.sub(r'^\s*[ㅇ□■○●◦•·\-–※>]+\s*', '', str(x.get('text') or ''))           # 한글 단계 기호
+        t = re.sub(r'^\s*[(\[]([^)\]]{1,8})[)\]]\s*', '', t).strip()                      # (라벨)
         if len(t) >= 8 and t not in [b['text'] for b in blocks]:
             h = str(x.get('heading') or '')
             blocks.append({'id': f'b{len(blocks) + 1}', 'heading': h if h in outline else next((o for o in outline if o in h or h in o), h), 'text': t})
@@ -952,7 +967,7 @@ def skillgen_analyze():
     return ok(job={'id': jid, 'draft': draft, 'analysis': analysis, 'scope': scope})
 
 
-def _bp_score(bp, form, blocks, memo):
+def _bp_score(bp, form, blocks, memo, allowed=''):
     heads = [s['heading'] for s in bp['sections']]
     outline = form['outline']
     # 구성 재현: 기대 목차 순서대로 몇 개가 같은 순서로 나오는가(LCS 비율)
@@ -964,7 +979,7 @@ def _bp_score(bp, form, blocks, memo):
     struct = dp[m][n] / max(1, m)
     text = checks.bp_text(bp)
     fixed_ok = all(b['text'] in text for b in blocks) if blocks else True
-    src_vals = [v for v in checks.extract_values(memo)]
+    src_vals = [v for v in checks.extract_values(memo)] + checks.extract_values(allowed)   # 고정 문구(상속 포함)의 숫자는 허용
     got = checks.extract_values(text)
     lost = [v['raw'] for v in src_vals if not any(abs(x['value'] - v['value']) < 1e-9 and x['unit'] == v['unit'] for x in got)]
     def derived(x):
@@ -979,6 +994,29 @@ def _bp_score(bp, form, blocks, memo):
 
 def _criteria_pass(sc):
     return [sc['struct'] >= 0.95, sc['fixed'], not sc['lost'] and not sc['new'], not sc['grammar']]
+
+
+@app.get('/api/skillgen/jobs')
+@login_required
+def skillgen_jobs():
+    out = []
+    for j in rows(g.con, "select * from skill_jobs where owner=? order by created desc limit 8", g.u['id']):
+        d = J(j['skill'], {})
+        rep = J(j['report'], {})
+        out.append({'id': j['id'], 'stage': j['stage'], 'request': j['request'], 'name': d.get('name'), 'created': j['created'],
+                    'auto_pass': rep.get('auto_pass') if rep else None})
+    return ok(jobs=out)
+
+
+@app.get('/api/skillgen/<jid>')
+@login_required
+def skillgen_get(jid):
+    j = row(g.con, 'select * from skill_jobs where id=? and owner=?', jid, g.u['id'])
+    if not j:
+        abort(404)
+    return ok(job={'id': j['id'], 'draft': J(j['skill']), 'analysis': J(j['analysis'], {}), 'report': J(j['report'], None), 'scope': j['scope'],
+                   'stage': j['stage'], 'files': [{'id': u['id'], 'name': u['name'], 'drm': bool(u['drm']), 'heads': [], 'kind': u['kind']}
+                                                  for u in _uploads(J(j['files'], []))]})
 
 
 @app.post('/api/skillgen/<jid>/evaluate')
@@ -1023,7 +1061,8 @@ def skillgen_evaluate(jid):
         bw, mw = llm.blueprint(with_t, memo, [], ctx)
         bw = checks.enforce_fixed(bw, blocks + parent_blocks)
         bo, mo = llm.blueprint(without_t, memo, [], ctx)
-        results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo), 'without': _bp_score(bo, form, blocks, memo),
+        allowed = chr(10).join(x['text'] for x in blocks + parent_blocks)
+        results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo, allowed), 'without': _bp_score(bo, form, blocks, memo, allowed),
                       'mode': mw['mode'], 'ms': mw['ms'] + mo['ms']}
 
     th = [threading.Thread(target=run, args=(i, f)) for i, f in enumerate(files)]
@@ -1165,7 +1204,7 @@ def _advance(r, u, approve, note):
     hist.append({'t': now(), 'who': '시스템', 'act': f'병합 · 태그 {tag}', 'note': '다음 문서부터 반영'})
     g.con.execute('update requests set stage=?, history=?, updated=? where id=?', ('done', json.dumps(hist, ensure_ascii=False), now(), r['id']))
     g.con.commit()
-    sync_forms(force=True)
+    sync_forms(force=True, max_age=30)             # merge()가 방금 당겨 왔으므로 다시 받지 않고 양식만 다시 만든다
     log(u['name'] or '시스템', f"{KIND_NAME.get(meta.get('kind'), '등록')} 완료 — {r['name']} · {tag}")
 
 
@@ -1327,17 +1366,101 @@ def boot():
     threading.Thread(target=corp.warm, kwargs={'log': lambda m: None}, daemon=True).start()
 
 
-def reset_demo():
-    """시연 초기화: 로컬 DB·결과물·첨부를 지우고, 스킬 저장소의 열린 PR을 닫는다(병합된 이력·태그는 그대로)."""
+def reset_demo(user_skills=False):
+    """시연 초기화: 로컬 기록(문서·첨부·요청·작업·로그)과 결과물을 비우고, 스킬 저장소의 열린 PR을 닫는다(병합된 이력·태그는 그대로)."""
     import shutil
-    for p in (core.DB_PATH, engines.OUT, UP, engines.JOBS):
-        if os.path.isdir(p):
-            shutil.rmtree(p, ignore_errors=True)
-        elif os.path.exists(p):
-            os.remove(p)
+    core.init_db()
+    con = db()
+    for t in ('docs', 'doc_files', 'compose', 'uploads', 'requests', 'skill_jobs', 'ireq', 'events', 'uses'):
+        con.execute(f'delete from {t}')
+    con.execute("update users set net='closed'")
+    con.execute('insert into events(t,who,what) values(?,?,?)', (now(), '시스템', '시연 초기화'))
+    con.commit()
+    con.close()
     for p in (engines.OUT, UP, engines.JOBS):
+        shutil.rmtree(p, ignore_errors=True)
         os.makedirs(p, exist_ok=True)
-    skills.demo_cleanup()
+    skills.demo_cleanup(user_skills)
+    sync_forms(force=True, max_age=10)
+
+
+# ───────────── 시연 도우미 ─────────────
+SEED = os.path.join(core.ROOT, 'seed', 'out')
+
+
+@app.get('/api/demo/files')
+@login_required
+def demo_files():
+    out = []
+    for dp, _, fns in os.walk(SEED):
+        for f in sorted(fns):
+            rel = os.path.relpath(os.path.join(dp, f), SEED).replace(os.sep, '/')
+            out.append({'name': rel, 'size': os.path.getsize(os.path.join(dp, f))})
+    return ok(files=out, ready=bool(out))
+
+
+@app.post('/api/demo/seed')
+@login_required
+def demo_seed():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('make_seed', os.path.join(core.ROOT, 'seed', 'make_seed.py'))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.main(SEED)
+    log(g.u['name'], '시연 자료 만들기 (seed/out)')
+    return demo_files()
+
+
+@app.post('/api/demo/attach')
+@login_required
+def demo_attach():
+    import shutil
+    out = []
+    for rel in (request.json or {}).get('names') or []:
+        src = os.path.normpath(os.path.join(SEED, rel))
+        if not src.startswith(os.path.normpath(SEED)) or not os.path.isfile(src):
+            continue
+        name = os.path.basename(src)
+        uid = core.new_id('f')
+        path = os.path.join(UP, uid + '_' + re.sub(r'[^\w.\-가-힣]', '_', name))
+        shutil.copy(src, path)
+        r = extract.read(path, name)
+        g.con.execute('insert into uploads values(?,?,?,?,?,?,?,?,?)', (uid, g.u['id'], name, path, r['kind'], r['text'],
+                                                                      json.dumps(r['tables'], ensure_ascii=False), int(r['drm']), now()))
+        out.append({'id': uid, 'name': name, 'kind': r['kind'], 'drm': r['drm'], 'tables': r['tables'][:3], 'heads': r['heads'], 'chars': len(r['text']),
+                    'text': (r['text'] or '')[:4000]})
+        time.sleep(0.002)
+    log(g.u['name'], f"시연 자료 첨부 — {', '.join(o['name'] for o in out)}")
+    return ok(uploads=out)
+
+
+@app.post('/api/demo/warm')
+@login_required
+def demo_warm():
+    """시연 전 예열: 엔진 3종을 한 번씩 돌려 백신 첫 검사·디스크 캐시를 미리 끝낸다."""
+    bp = {'title': '예열', 'sections': [{'heading': '개요', 'items': [{'label': '목적', 'text': '시연 전 예열', 'children': []}], 'table': None}]}
+    out = {}
+    for fmt in ('hwp', 'ppt', 'web'):
+        t0 = time.time()
+        try:
+            engines.make(fmt, bp, {'name': '예열', 'desc': ''}, {'dept': '예열', '담당': '예열'}, 'warm', 1)
+            out[fmt] = round(time.time() - t0, 1)
+        except Exception as e:
+            out[fmt] = str(e)[:80]
+    st = llm.ping() if request.args.get('ai') else {}
+    log(g.u['name'], f'시연 예열 — {out}' + (f" · AI {st.get('ms')}ms" if st.get('ok') else ''))
+    return ok(sec=out, ai=st)
+
+
+@app.post('/api/demo/reset')
+@login_required
+def demo_reset():
+    g.con.commit()
+    g.con.close()
+    g.pop('con', None)
+    reset_demo(bool((request.json or {}).get('user_skills')))
+    session.clear()
+    return ok()
 
 
 if __name__ == '__main__':
