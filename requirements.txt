@@ -1,0 +1,9 @@
+flask>=3.0
+python-pptx>=1.0
+openpyxl>=3.1
+pymupdf>=1.24
+pillow>=10
+pyyaml>=6
+lxml>=5
+numpy>=1.26
+fonttools[woff]>=4.50

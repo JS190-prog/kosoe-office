@@ -1,0 +1,1354 @@
+"""코쇠오피스 — 각자 PC에서 실행하는 클라이언트 (Flask · SQLite · Claude Code 구독 CLI · 전사 공용 스킬 · Git 스킬 저장소).
+
+실행: python app.py  →  http://localhost:8810
+"""
+import json
+import os
+import re
+import secrets
+import subprocess
+import threading
+import time
+from functools import wraps
+
+import yaml
+from flask import Flask, abort, g, has_request_context, jsonify, request, send_file, send_from_directory, session
+
+import checks
+import core
+import corp
+import engines
+import extract
+import llm
+import skills
+from core import CFG, DATA, FMT, GRADE, ROLE, db, now, row, rows
+
+
+def log(who, what):
+    """요청 안에서는 같은 연결로 기록한다(따로 열면 쓰기 잠금에 걸린다)."""
+    if has_request_context() and 'con' in g:
+        g.con.execute('insert into events(t,who,what) values(?,?,?)', (now(), who, what))
+    else:
+        core.log(who, what)
+
+
+app = Flask(__name__, static_folder=None)
+_sk = os.path.join(DATA, 'secret.key')
+if not os.path.exists(_sk):
+    open(_sk, 'w').write(secrets.token_hex(32))
+app.secret_key = open(_sk).read().strip()
+app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
+UP = os.path.join(DATA, 'uploads')
+os.makedirs(UP, exist_ok=True)
+STATIC = os.path.join(core.ROOT, 'static')
+MANUAL_MIN = {'hwp': 90, 'ppt': 180, 'web': 150}   # 손으로 만들 때 걸리는 시간(분, 가정)
+SCOPE_STAGES = {'me': ['ci'], 'team': ['lead'], 'dept': ['dept'], 'corp': ['corp']}
+STAGE_NAME = {'ci': '자동 검사', 'lead': '팀장 승인', 'dept': '부서 관리자 승인', 'corp': '전사 관리자 승인', 'done': '등록 완료', 'rejected': '반려'}
+KIND_NAME = {'new': '스킬 등록', 'update': '스킬 변경', 'revert': '스킬 복구'}
+
+
+# ───────────── 공통 ─────────────
+@app.before_request
+def _open():
+    g.con = db()
+
+
+@app.teardown_request
+def _close(exc):
+    c = g.pop('con', None)
+    if c:
+        c.commit()
+        c.close()
+
+
+def ok(**k):
+    return jsonify({'ok': True, **k})
+
+
+def err(msg, code=400):
+    return jsonify({'ok': False, 'error': msg}), code
+
+
+def login_required(f):
+    @wraps(f)
+    def w(*a, **k):
+        uid = session.get('uid')
+        u = core.get_user(g.con, uid) if uid else None
+        if not u:
+            return err('로그인이 필요합니다', 401)
+        g.u = u
+        g.net = u['net'] if (u['net'] == 'closed' or core.inet_active(g.con, u['id'])) else 'closed'
+        return f(*a, **k)
+    return w
+
+
+def J(s, d=None):
+    try:
+        return json.loads(s) if s else d
+    except Exception:
+        return d
+
+
+def ai_ctx(fast=False):
+    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 사내 모델 자리(시연: 같은 구독 CLI 또는 규칙)."""
+    if g.net == 'internet':
+        pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
+        return {'use_llm': True, 'label': f"{llm.display()} (인터넷망 · 마스킹)", 'mk': llm.Masker(pol), 'fast': fast}
+    if CFG['closed_llm'] == 'rule':
+        return {'use_llm': False}
+    return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
+
+
+def ai_state():
+    if CFG['llm_kind'] == 'claude_cli':
+        st = llm.cli_status()
+        return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'closed': CFG['closed_llm'], 'detail': st['detail']}
+    return {'connected': llm.available(), 'model': llm.display(), 'kind': CFG['llm_kind'], 'closed': CFG['closed_llm'],
+            'detail': '' if llm.available() else 'KOSOE_LLM_API_KEY 없음'}
+
+
+def people_of(u):
+    lead = core.lead_of(g.con, u['team'])
+    head = row(g.con, "select * from users where dept=? and role='deptAdmin'", u['dept'])
+    fmt = lambda x: f"{x['name']} {x['title']}" if x else ''
+    return {'담당': fmt(u), '팀장': fmt(lead), '부서장': fmt(head), 'dept': u['team']}
+
+
+# ───────────── 양식(스킬 저장소 → 갤러리) ─────────────
+_sync_lock = threading.Lock()
+
+
+def sync_forms(force=False):
+    """스킬 저장소를 당겨 와 양식 카드 캐시(templates 테이블)를 다시 만든다."""
+    with _sync_lock:
+        st = skills.ensure(force=force)
+        if not skills.STATE['head']:
+            return st
+        con = db()
+        uses = {r['template_id']: r['n'] for r in rows(con, 'select * from uses')}
+        con.execute('delete from templates')
+        for f in skills.form_rows():
+            con.execute('insert into templates values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        (f['id'], f['name'], f['fmt'], f['use'], f['scope'], json.dumps(f['outline'], ensure_ascii=False), f['desc'],
+                         f['preset'], f['grade'], f['dept'], f['team'], f['owner'], uses.get(f['id'], 0), f['ver'], f['path'], f['tag'],
+                         '[]', f['rules'], json.dumps(f['fixed'], ensure_ascii=False), '', now(), json.dumps(f['skill'], ensure_ascii=False)))
+        con.commit()
+        con.close()
+        return st
+
+
+def tpl_view(t, u):
+    o = dict(t)
+    o['outline'] = J(t['outline'], [])
+    o['fixed'] = J(t['fixed'], [])
+    info = J(t['skill'], {}) or {}
+    o['skill_info'] = info
+    if info.get('id'):
+        up = list(reversed((info.get('chain') or [])[:-1])) + ['전사']
+        o['skill'] = f"{info['id']}@{info.get('version', '')} ← " + ' ← '.join(up)
+    else:
+        e = engines.engine_of(t['fmt'])
+        o['skill'] = f"전사 {e['name']}@{e['sha']}"
+    o['usable'] = core.can_use_template(t, u, g.net)
+    o['blocked'] = '대외비 양식은 인터넷망에서 쓸 수 없습니다' if g.net == 'internet' and t['grade'] == 'c' else ''
+    return o
+
+
+def visible_templates(u):
+    out = []
+    for t in rows(g.con, 'select * from templates order by uses desc, scope desc'):
+        vis = (t['scope'] == 'corp' or u['role'] == 'corpAdmin' or (t['scope'] == 'dept' and t['dept'] == u['dept'])
+               or (t['scope'] == 'team' and t['team'] == u['team']) or (t['scope'] == 'me' and t['owner'] == u['id']))
+        if vis:
+            out.append(tpl_view(t, u))
+    return out
+
+
+def template_for_render(t):
+    """엔진에 넘길 양식 정보 + 해석된 스킬 사슬."""
+    info = J(t['skill'], {}) or {}
+    chain = info.get('chain') or []
+    return {**t, 'chain_names': [f'전사 {c}' for c in (info.get('corp') or [])[:1]] + chain[-2:]}
+
+
+def doc_view(d, u, full=False):
+    o = {k: d[k] for k in ('id', 'title', 'template_id', 'fmt', 'grade', 'ver', 'created', 'updated')}
+    own = core.get_user(g.con, d['owner'])
+    o['owner'] = {'id': own['id'], 'name': own['name'], 'team': own['team']} if own else {}
+    o['perm'] = core.doc_perm(d, u)
+    o['acl'] = J(d['acl'], [])
+    t = row(g.con, 'select name from templates where id=?', d['template_id'])
+    o['template'] = t['name'] if t else d['template_id']
+    o['locked'] = g.net == 'internet' and d['grade'] == 'c'
+    fs = rows(g.con, 'select * from doc_files where doc_id=? order by ver desc, created desc', d['id'])
+    o['files'] = [{'ver': f['ver'], 'fmt': f['fmt'], 'checks': J(f['checks'], []), 'warns': J(f['warns'], []), 'ms': f['elapsed_ms'],
+                   'llm': J(f['llm'], {}), 'created': f['created'], 'size': os.path.getsize(f['path']) if os.path.exists(f['path']) else 0,
+                   'resolution': J(f['resolution'], {}), 'shots': _shots(d['id'], f['ver']) if f['fmt'] == 'ppt' else []} for f in fs]
+    if full:
+        o['blueprint'] = J(d['blueprint'], {})
+        o['made'] = J(d['made'], {})
+    return o
+
+
+def _shots(doc_id, ver):
+    d = os.path.join(engines.OUT, doc_id, f'v{ver}_shots')
+    return sorted(os.listdir(d), key=lambda n: int(re.sub(r'\D', '', n) or 0)) if os.path.isdir(d) else []
+
+
+def ppt_shots(path, doc_id, ver):
+    """PowerPoint가 있으면 슬라이드를 PNG로 내보내 미리보기를 만든다(백그라운드)."""
+    dst = os.path.join(engines.OUT, doc_id, f'v{ver}_shots')
+    tmp = dst + '_tmp'
+    os.makedirs(tmp, exist_ok=True)
+    ps = (f"$pp = New-Object -ComObject PowerPoint.Application; $p = $pp.Presentations.Open('{path}', $true, $false, $false); "
+          f"$i=1; foreach ($s in $p.Slides) {{ $s.Export('{tmp}\\s' + $i + '.png', 'PNG', 1280, 720); $i++ }}; $p.Close(); $pp.Quit()")
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps], capture_output=True, timeout=120)
+        if os.listdir(tmp):
+            if os.path.isdir(dst):
+                import shutil
+                shutil.rmtree(dst, ignore_errors=True)
+            os.replace(tmp, dst)
+    except Exception:
+        pass
+
+
+# ───────────── 정적 ─────────────
+@app.get('/')
+def index():
+    return send_from_directory(STATIC, 'index.html')
+
+
+@app.get('/static/<path:p>')
+def static_file(p):
+    return send_from_directory(STATIC, p)
+
+
+# ───────────── 로그인 · 상태 ─────────────
+@app.get('/api/personas')
+def personas():
+    return ok(users=[{**u, 'role_name': ROLE[u['role']]} for u in rows(g.con, 'select * from users')])
+
+
+@app.post('/api/login')
+def login():
+    u = core.get_user(g.con, (request.json or {}).get('uid'))
+    if not u:
+        return err('없는 사용자')
+    session['uid'] = u['id']
+    log(u['name'], '로그인 (SSO 시연: 가상 사용자 선택)')
+    return ok()
+
+
+@app.post('/api/logout')
+def logout():
+    session.clear()
+    return ok()
+
+
+def _pending(u):
+    n = 0
+    for r in rows(g.con, "select * from requests where stage in ('lead','dept','corp')"):
+        if _approver_ok(r, u):
+            n += 1
+    if u['role'] == 'lead':
+        n += len(rows(g.con, "select id from ireq where status='wait' and team=? and uid<>?", u['team'], u['id']))
+    if u['role'] == 'security':
+        n += len(rows(g.con, "select i.id from ireq i join users x on x.id=i.uid where i.status='wait' and x.role in ('lead','deptAdmin','corpAdmin')"))
+    return n
+
+
+@app.get('/api/me')
+@login_required
+def me():
+    u = g.u
+    return ok(user={**u, 'role_name': ROLE[u['role']]}, net=g.net, inet=core.inet_active(g.con, u['id']), pending=_pending(u),
+              ai=ai_state(), hwp=engines.hwp_ready(),
+              repo={'mode': skills.STATE['mode'], 'url': skills.STATE['url'], 'head': skills.STATE['head'][:7], 'error': skills.STATE['error']})
+
+
+@app.post('/api/net')
+@login_required
+def set_net():
+    want = (request.json or {}).get('net')
+    if want == 'internet' and not core.inet_active(g.con, g.u['id']):
+        return err('인터넷망은 팀장 승인을 받은 기간에만 쓸 수 있습니다. [인터넷 사용 신청]에서 신청해 주세요.', 403)
+    g.con.execute('update users set net=? where id=?', (want if want in ('closed', 'internet') else 'closed', g.u['id']))
+    log(g.u['name'], f"망 전환 → {'인터넷망' if want == 'internet' else '폐쇄망'}")
+    return ok()
+
+
+@app.get('/api/health')
+def health():
+    p = llm.ping() if request.args.get('ping') else {'ok': llm.available(), 'error': ai_state()['detail']}
+    return ok(ai=p, hwp=engines.hwp_ready(), repo=skills.STATE, model=llm.display(), kind=CFG['llm_kind'], corp=corp.status())
+
+
+# ───────────── 양식 ─────────────
+@app.get('/api/templates')
+@login_required
+def templates():
+    return ok(templates=visible_templates(g.u))
+
+
+@app.post('/api/route')
+@login_required
+def route():
+    text = (request.json or {}).get('text', '')
+    ts = [t for t in visible_templates(g.u) if t['usable']]
+    raw = [row(g.con, 'select * from templates where id=?', t['id']) for t in ts]
+    out, meta = llm.route(text, raw, ai_ctx(fast=True))
+    return ok(suggest=out, meta=meta)
+
+
+# ───────────── 첨부 ─────────────
+@app.post('/api/upload')
+@login_required
+def upload():
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return err('파일이 없습니다')
+    uid = core.new_id('f')
+    name = os.path.basename(f.filename)
+    path = os.path.join(UP, uid + '_' + re.sub(r'[^\w.\-가-힣]', '_', name))
+    f.save(path)
+    try:
+        r = extract.read(path, name)
+    except Exception as e:
+        return err(str(e))
+    g.con.execute('insert into uploads values(?,?,?,?,?,?,?,?,?)', (uid, g.u['id'], name, path, r['kind'], r['text'],
+                                                                  json.dumps(r['tables'], ensure_ascii=False), int(r['drm']), now()))
+    log(g.u['name'], f"첨부 {name}" + (' — DRM 문서 감지, 내용 읽지 않음' if r['drm'] else f" — 표 {len(r['tables'])}개, 장 제목 {len(r['heads'])}개"))
+    return ok(upload={'id': uid, 'name': name, 'kind': r['kind'], 'drm': r['drm'], 'tables': r['tables'][:3], 'heads': r['heads'],
+                      'chars': len(r['text'])})
+
+
+def _uploads(ids):
+    out = []
+    for i in ids or []:
+        u = row(g.con, 'select * from uploads where id=? and owner=?', i, g.u['id'])
+        if u and not u['drm']:
+            out.append(u)
+    return out
+
+
+# ───────────── 작성(compose) ─────────────
+def compose_view(c):
+    return {'id': c['id'], 'template_id': c['template_id'], 'fmt': c['fmt'], 'grade': c['grade'], 'title': c['title'],
+            'blueprint': J(c['blueprint'], {}), 'chat': J(c['chat'], []), 'files': J(c['files'], []), 'doc_id': c['doc_id'],
+            'llm': J(c['llm'], {})}
+
+
+def _tpl_for_llm(t):
+    """llm.blueprint에 넘길 양식(스킬의 용어·금지어를 작성 규칙에 덧붙인다)."""
+    info = J(t['skill'], {}) or {}
+    rules = [t['rules'] or '']
+    gl = info.get('glossary') or {}
+    if gl.get('terms'):
+        rules.append('용어: ' + ', '.join(f'{k}={v}' for k, v in gl['terms'].items()))
+    banned = (gl.get('banned') or []) + ((info.get('checks') or {}).get('banned') or [])
+    if banned:
+        rules.append('쓰지 말 것: ' + ', '.join(banned))
+    req = (info.get('checks') or {}).get('required') or []
+    if req:
+        rules.append('반드시 넣을 문구(글자 그대로): ' + ' / '.join(req))
+    return {**t, 'rules': '\n'.join(r for r in rules if r)}
+
+
+@app.post('/api/compose')
+@login_required
+def compose_new():
+    b = request.json or {}
+    t = row(g.con, 'select * from templates where id=?', b.get('template_id'))
+    if not t or not core.can_use_template(t, g.u, g.net):
+        return err('이 양식을 쓸 권한이 없습니다' + (' (대외비 양식은 인터넷망 사용 불가)' if t and g.net == 'internet' and t['grade'] == 'c' else ''), 403)
+    files = _uploads(b.get('upload_ids'))
+    text = (b.get('request') or '').strip() or t['name']
+    bp, meta = llm.blueprint(_tpl_for_llm(t), text, files, ai_ctx())
+    bp = checks.enforce_fixed(bp, J(t['fixed'], []))
+    cid = core.new_id('c')
+    info = J(t['skill'], {}) or {}
+    who = f" · 스킬 {info['id']}@{info.get('version')}" if info.get('id') else ''
+    chat = [{'who': 'me', 'text': text, 't': now()},
+            {'who': 'ai', 'text': f"**{t['name']}** 구성({' → '.join(J(t['outline'], []))})으로 초안을 만들었습니다{who}. 고칠 점을 말씀해 주세요.",
+             't': now(), 'meta': meta}]
+    source = '\n'.join([text] + [f['text'] or '' for f in files])
+    g.con.execute('insert into compose values(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                  (cid, g.u['id'], t['id'], b.get('fmt') or t['fmt'], t['grade'], bp['title'], json.dumps(bp, ensure_ascii=False),
+                   json.dumps(chat, ensure_ascii=False), json.dumps([{'id': f['id'], 'name': f['name']} for f in files], ensure_ascii=False),
+                   time.time(), None, json.dumps(meta, ensure_ascii=False), source[:30000]))
+    g.con.execute('insert into uses values(?,1) on conflict(template_id) do update set n=n+1', (t['id'],))
+    g.con.execute('update templates set uses=uses+1 where id=?', (t['id'],))
+    log(g.u['name'], f"새 문서 시작 — {t['name']}{who} · AI {meta['label']} {meta['ms']}ms" + (f" · 마스킹 {meta['masked']}건" if meta.get('masked') else ''))
+    return ok(compose=compose_view(row(g.con, 'select * from compose where id=?', cid)))
+
+
+def _my_compose(cid):
+    c = row(g.con, 'select * from compose where id=? and owner=?', cid, g.u['id'])
+    if not c:
+        abort(404)
+    return c
+
+
+@app.get('/api/compose/<cid>')
+@login_required
+def compose_get(cid):
+    return ok(compose=compose_view(_my_compose(cid)))
+
+
+@app.post('/api/compose/<cid>/chat')
+@login_required
+def compose_chat(cid):
+    c = _my_compose(cid)
+    b = request.json or {}
+    msg = (b.get('message') or '').strip()
+    if not msg:
+        return err('내용을 입력해 주세요')
+    files = _uploads(b.get('upload_ids'))
+    out, meta = llm.edit(J(c['blueprint']), msg, files, ai_ctx())
+    chat = J(c['chat'], [])
+    chat += [{'who': 'me', 'text': msg, 't': now(), 'files': [f['name'] for f in files]}, {'who': 'ai', 'text': out['reply'], 't': now(), 'meta': meta}]
+    bp = out['blueprint']
+    allf = J(c['files'], []) + [{'id': f['id'], 'name': f['name']} for f in files]
+    src = (c['source'] or '') + ''.join('\n' + (f['text'] or '') for f in files)
+    g.con.execute('update compose set blueprint=?, chat=?, title=?, files=?, source=? where id=?',
+                  (json.dumps(bp, ensure_ascii=False), json.dumps(chat, ensure_ascii=False), bp['title'], json.dumps(allf, ensure_ascii=False), src[:30000], cid))
+    return ok(compose=compose_view(row(g.con, 'select * from compose where id=?', cid)))
+
+
+@app.put('/api/compose/<cid>')
+@login_required
+def compose_put(cid):
+    c = _my_compose(cid)
+    b = request.json or {}
+    bp = llm._clean_bp(b.get('blueprint') or J(c['blueprint']), [])
+    g.con.execute('update compose set blueprint=?, title=?, fmt=?, grade=? where id=?',
+                  (json.dumps(bp, ensure_ascii=False), bp['title'], b.get('fmt') or c['fmt'], b.get('grade') or c['grade'], cid))
+    return ok(compose=compose_view(row(g.con, 'select * from compose where id=?', cid)))
+
+
+def _file_text(path, fmt):
+    try:
+        if fmt == 'hwp':
+            return '\n'.join(engines.hwp_text(path))
+        if fmt == 'ppt':
+            return '\n'.join(engines.pptx_text(path))
+        return checks.html_text(path)
+    except Exception:
+        return None
+
+
+def _render(doc_id, ver, fmt, bp, t, u, meta, source=''):
+    tr = template_for_render(t)
+    path, warns, ms, engine = engines.make(fmt, bp, tr, people_of(u), doc_id, ver)
+    cks = engines.check(bp, warns)
+    if fmt != 'hwp':
+        cks = [c for c in cks if c['id'] != 'render']
+    info = J(t['skill'], {}) or {}
+    if info.get('id'):
+        cks += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
+    if source and source.strip():
+        cc = checks.crosscheck(source, [{'name': FMT[fmt], 'text': _file_text(path, fmt)}])
+        bad = [i for i in cc['items'] if i['kind'] in ('mismatch', 'unknown')]
+        cks.append({'id': 'cross', 'name': '원본값 대조 (원본 자료 ↔ 결과 파일)', 'ok': not bad, 'fix': False,
+                    'detail': '; '.join(i['detail'] for i in bad)[:200] or f"값 {cc['checked']}개 대조 · 빠진 값 {cc['missing']}개는 참고"})
+    res = {'engine': engine, **(skills.resolve(info['id'])['resolution'] if info.get('id') else
+                                {'corp': {engine['corp']: engine['sha']}, 'skills': [], 'repo_head': skills.STATE['head'][:7]})}
+    g.con.execute('insert into doc_files values(?,?,?,?,?,?,?,?,?,?)', (doc_id, ver, fmt, path, json.dumps(cks, ensure_ascii=False),
+                                                                       json.dumps(warns, ensure_ascii=False), ms, json.dumps(meta or {}, ensure_ascii=False),
+                                                                       now(), json.dumps(res, ensure_ascii=False)))
+    if fmt == 'ppt':
+        threading.Thread(target=ppt_shots, args=(path, doc_id, ver), daemon=True).start()
+    return cks, ms
+
+
+@app.post('/api/compose/<cid>/generate')
+@login_required
+def compose_generate(cid):
+    c = _my_compose(cid)
+    b = request.json or {}
+    fmts = [f for f in (b.get('fmts') or [c['fmt']]) if f in FMT]
+    sync_forms()                                   # 승인된 최신 스킬로 만든다(다음 문서부터 반영)
+    t = row(g.con, 'select * from templates where id=?', c['template_id'])
+    if not t:
+        return err('양식이 저장소에서 사라졌습니다. 양식을 다시 골라 주세요.', 404)
+    bp = J(c['blueprint'])
+    meta = J(c['llm'], {})
+    if c['doc_id']:
+        d = row(g.con, 'select * from docs where id=?', c['doc_id'])
+        ver = d['ver'] + 1
+        g.con.execute('update docs set ver=?, blueprint=?, title=?, updated=?, grade=? where id=?',
+                      (ver, json.dumps(bp, ensure_ascii=False), bp['title'], now(), c['grade'], d['id']))
+        doc_id = d['id']
+    else:
+        doc_id, ver = core.new_id('d'), 1
+        g.con.execute('insert into docs values(?,?,?,?,?,?,?,?,?,?,?,?)', (doc_id, bp['title'], t['id'], fmts[0], c['grade'], g.u['id'], '[]', 1,
+                                                                         json.dumps(bp, ensure_ascii=False), '{}', now(), now()))
+        g.con.execute('update compose set doc_id=? where id=?', (doc_id, cid))
+    out = []
+    try:
+        for f in fmts:
+            cks, ms = _render(doc_id, ver, f, bp, t, g.u, meta, c['source'] or '')
+            out.append({'fmt': f, 'ms': ms, 'checks': cks})
+    except Exception as e:
+        return err(f'문서 생성 실패: {e}', 500)
+    mins = round((time.time() - c['started']) / 60, 1)
+    made = {'minutes': mins, 'manual': sum(MANUAL_MIN[f] for f in fmts), 'fmts': fmts}
+    g.con.execute('update docs set made=? where id=?', (json.dumps(made), doc_id))
+    log(g.u['name'], f"문서 생성 — {bp['title']} v{ver} ({', '.join(FMT[f] for f in fmts)}) · {', '.join(str(o['ms']) + 'ms' for o in out)}")
+    return ok(doc=doc_view(row(g.con, 'select * from docs where id=?', doc_id), g.u, True), results=out)
+
+
+# ───────────── 문서함 ─────────────
+@app.get('/api/docs')
+@login_required
+def docs():
+    out = []
+    for d in rows(g.con, 'select * from docs order by updated desc'):
+        if core.doc_perm(d, g.u) or g.u['role'] == 'security':
+            v = doc_view(d, g.u)
+            if not v['perm']:
+                v['perm'] = 'audit'
+            out.append(v)
+    return ok(docs=out)
+
+
+def _doc(did, need='r'):
+    d = row(g.con, 'select * from docs where id=?', did)
+    if not d:
+        abort(404)
+    p = core.doc_perm(d, g.u)
+    rank = {'': 0, 'r': 1, 'w': 2, 'm': 3}
+    if rank[p] < rank[need]:
+        abort(403)
+    if g.net == 'internet' and d['grade'] == 'c':
+        abort(423)
+    return d
+
+
+@app.errorhandler(403)
+def e403(e):
+    return err('이 문서에 대한 권한이 없습니다', 403)
+
+
+@app.errorhandler(404)
+def e404(e):
+    return err('찾을 수 없습니다', 404)
+
+
+@app.errorhandler(423)
+def e423(e):
+    return err('대외비 문서는 인터넷망에서 열 수 없습니다. 폐쇄망으로 전환해 주세요.', 423)
+
+
+@app.get('/api/docs/<did>')
+@login_required
+def doc_get(did):
+    return ok(doc=doc_view(_doc(did), g.u, True))
+
+
+@app.post('/api/docs/<did>/open')
+@login_required
+def doc_open(did):
+    d = _doc(did, 'w')
+    c = row(g.con, 'select * from compose where doc_id=? and owner=?', did, g.u['id'])
+    if not c:
+        cid = core.new_id('c')
+        g.con.execute('insert into compose values(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (cid, g.u['id'], d['template_id'], d['fmt'], d['grade'], d['title'], d['blueprint'],
+                       json.dumps([{'who': 'ai', 'text': f"**{d['title']}** v{d['ver']}을(를) 열었습니다. 고칠 점을 말씀해 주세요.", 't': now()}], ensure_ascii=False),
+                       '[]', time.time(), did, '{}', ''))
+        c = row(g.con, 'select * from compose where id=?', cid)
+    return ok(compose=compose_view(c))
+
+
+@app.post('/api/docs/<did>/fix')
+@login_required
+def doc_fix(did):
+    d = _doc(did, 'w')
+    sync_forms()
+    t = row(g.con, 'select * from templates where id=?', d['template_id'])
+    last = row(g.con, "select warns from doc_files where doc_id=? and ver=? and fmt='hwp'", did, d['ver'])
+    bp, meta = engines.autofix(J(d['blueprint']), lambda xs: llm.shorten(xs, ai_ctx(fast=True)), J(last['warns'], []) if last else [])
+    info = J(t['skill'], {}) if t else {}
+    if info and info.get('id'):
+        bp = checks.fix_skill(bp, {**info, 'fixed': J(t['fixed'], [])})
+    ver = d['ver'] + 1
+    fmts = sorted({f['fmt'] for f in rows(g.con, 'select fmt from doc_files where doc_id=? and ver=?', did, d['ver'])}) or [d['fmt']]
+    src = (row(g.con, 'select source from compose where doc_id=?', did) or {}).get('source') or ''
+    g.con.execute('update docs set ver=?, blueprint=?, title=?, updated=? where id=?', (ver, json.dumps(bp, ensure_ascii=False), bp['title'], now(), did))
+    g.con.execute('update compose set blueprint=? where doc_id=?', (json.dumps(bp, ensure_ascii=False), did))
+    for f in fmts:
+        _render(did, ver, f, bp, t, core.get_user(g.con, d['owner']), meta, src)
+    log(g.u['name'], f"검수 자동 수정 — {d['title']} v{ver}")
+    return ok(doc=doc_view(row(g.con, 'select * from docs where id=?', did), g.u, True))
+
+
+@app.put('/api/docs/<did>/acl')
+@login_required
+def doc_acl(did):
+    d = _doc(did, 'm')
+    acl = (request.json or {}).get('acl') or []
+    clean = []
+    for a in acl:
+        if a.get('t') not in ('user', 'team', 'dept', 'corp') or a.get('p') not in ('r', 'w'):
+            continue
+        if not core.acl_allowed(d['grade'], a['t']):
+            return err(f"{GRADE[d['grade']]} 문서는 {'부서' if a['t'] == 'dept' else '전사'} 공유를 할 수 없습니다 (사람·팀까지)", 400)
+        clean.append({'t': a['t'], 'v': a.get('v', ''), 'p': a['p']})
+    grade = (request.json or {}).get('grade') or d['grade']
+    if grade == 'c' and any(a['t'] in ('dept', 'corp') for a in clean):
+        return err('대외비로 올리려면 부서·전사 공유를 먼저 빼 주세요', 400)
+    g.con.execute('update docs set acl=?, grade=?, updated=? where id=?', (json.dumps(clean, ensure_ascii=False), grade, now(), did))
+    log(g.u['name'], f"공유 범위 변경 — {d['title']}: " + (', '.join(f"{a['v'] or '전사'}({'쓰기' if a['p'] == 'w' else '읽기'})" for a in clean) or '나만'))
+    return ok(doc=doc_view(row(g.con, 'select * from docs where id=?', did), g.u, True))
+
+
+@app.get('/api/docs/<did>/file')
+@login_required
+def doc_file(did):
+    d = _doc(did)
+    ver = int(request.args.get('ver') or d['ver'])
+    fmt = request.args.get('fmt') or d['fmt']
+    f = row(g.con, 'select * from doc_files where doc_id=? and ver=? and fmt=? order by created desc', did, ver, fmt)
+    if not f or not os.path.exists(f['path']):
+        return err('파일이 없습니다', 404)
+    inline = request.args.get('inline') == '1'
+    ext = os.path.splitext(f['path'])[1]
+    if not inline:
+        log(g.u['name'], f"다운로드 — {d['title']} v{ver}{ext}")
+    safe = re.sub(r'[\\/:*?"<>|]', '_', d['title'])
+    return send_file(f['path'], as_attachment=not inline, download_name=f'{safe}_v{ver}{ext}')
+
+
+@app.get('/api/docs/<did>/shot/<int:ver>/<name>')
+@login_required
+def doc_shot(did, ver, name):
+    _doc(did)
+    return send_from_directory(os.path.join(engines.OUT, did, f'v{ver}_shots'), name)
+
+
+@app.get('/api/docs/<did>/text')
+@login_required
+def doc_text(did):
+    d = _doc(did)
+    ver = int(request.args.get('ver') or d['ver'])
+    f = row(g.con, "select * from doc_files where doc_id=? and ver=? and fmt='hwp'", did, ver)
+    if not f:
+        return err('한글 파일이 없습니다', 404)
+    pua = re.compile('[-]')
+    return ok(lines=[pua.sub('■', l) for l in engines.hwp_text(f['path'])])
+
+
+# ───────────── 검수만 하기 (사람이 쓴 문서 · 원본값 대조 · 재검사) ─────────────
+@app.post('/api/inspect')
+@login_required
+def inspect():
+    """원본 자료(메모·엑셀) ↔ 대상 파일(내 문서의 결과 파일, 사람이 고친 파일) 값 대조 + 보고 문법·팩 규칙."""
+    b = request.json or {}
+    src_files = _uploads(b.get('source_ids'))
+    source = (b.get('source_text') or '') + ''.join('\n' + (f['text'] or '') for f in src_files)
+    targets = []
+    for i in b.get('target_ids') or []:
+        f = row(g.con, 'select * from uploads where id=? and owner=?', i, g.u['id'])
+        if f:
+            targets.append({'name': f['name'], 'text': None if f['drm'] else (f['text'] or None)})
+    if b.get('doc_id'):
+        d = _doc(b['doc_id'])
+        src = (row(g.con, 'select source from compose where doc_id=?', d['id']) or {}).get('source') or ''
+        source = source or src
+        for f in rows(g.con, 'select * from doc_files where doc_id=? and ver=?', d['id'], d['ver']):
+            targets.append({'name': f"{FMT[f['fmt']]} v{d['ver']}", 'text': _file_text(f['path'], f['fmt'])})
+    if not source.strip():
+        return err('대조할 원본 자료(메모·엑셀)를 넣어 주세요')
+    if not targets:
+        return err('검사할 파일을 올리거나 문서를 골라 주세요')
+    cc = checks.crosscheck(source, targets)
+    # 대상 파일마다 보고 문법·팩 규칙
+    rules = []
+    t = row(g.con, 'select * from templates where id=?', b.get('template_id')) if b.get('template_id') else None
+    info = (J(t['skill'], {}) or {}) if t else {}
+    for tg in targets:
+        if tg['text'] is None:
+            continue
+        bp = {'title': '', 'sections': [{'heading': '', 'items': [{'label': '', 'text': l.strip()} for l in tg['text'].splitlines() if l.strip()], 'table': None}]}
+        r = [c for c in engines.check(bp) if c['id'] in ('date', 'end')]
+        if info.get('id'):
+            r += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
+        rules.append({'target': tg['name'], 'checks': r})
+    log(g.u['name'], f"검수 — 대상 {len(targets)}개 · 불일치 {cc['mismatch']} · 판정 불가 {cc['unknown']}")
+    return ok(result=cc, rules=rules, targets=[t['name'] for t in targets])
+
+
+# ───────────── 스킬 (저장소) ─────────────
+def _can_change(s, u):
+    """스킬 변경 요청을 낼 수 있는 사람: 그 조직의 구성원·관리자, 개인 스킬은 본인."""
+    if u['role'] == 'corpAdmin':
+        return True
+    if s.get('scope') == 'user':
+        return s.get('owner') == u['id']
+    org = (s.get('org') or '').split('/')
+    return u['dept'] == org[0]
+
+
+def _scope_of(s):
+    if s.get('scope') == 'user':
+        return 'me'
+    org = (s.get('org') or '').split('/')
+    return 'team' if len(org) > 1 else 'dept'
+
+
+def skill_view(sid, s, allsk, u, full=False):
+    r = skills.resolve(sid, allsk)
+    o = {'id': sid, 'name': s.get('name'), 'version': s.get('version'), 'scope': _scope_of(s), 'org': s.get('org', ''), 'owner': s.get('owner', ''),
+         'share': s.get('share', ''), 'path': s['_path'], 'chain': r['levels'], 'corp': r['resolution']['corp'], 'tags': skills.tags_of(sid)[:8],
+         'forms': [{'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'outline': f.get('outline', [])} for f in s.get('forms') or []],
+         'errors': skills.validate(s, allsk), 'can_change': _can_change(s, u)}
+    if full:
+        o.update(blocks=s.get('blocks') or [], resolved_blocks=list(r['blocks'].values()), glossary=r['glossary'], checks=r['checks'], rules=r['rules'],
+                 own_rules=s.get('rules') or [], approval_line=r['approval_line'], history=skills.history(sid), files=skills.tree(sid),
+                 yaml=skills.file_text(s['_path'] + '/kosoe-skill.yaml'), skill_md=skills.file_text(s['_path'] + '/SKILL.md'))
+    return o
+
+
+@app.get('/api/skills')
+@login_required
+def skills_list():
+    if request.args.get('sync'):
+        sync_forms(force=True)
+    allsk = skills.all_skills()
+    vis = []
+    for sid, s in allsk.items():
+        if s.get('scope') == 'user' and s.get('owner') != g.u['id'] and g.u['role'] != 'corpAdmin':
+            continue
+        vis.append(skill_view(sid, s, allsk, g.u))
+    lk = corp.lock()
+    return ok(skills=vis, corp=corp.status(), corp_forms=len(skills.corp_forms()), locked=lk.get('locked_keys', []),
+              repo={**{k: v for k, v in skills.STATE.items() if k != 'synced'}, 'slug': skills.SLUG})
+
+
+@app.get('/api/skills/<sid>')
+@login_required
+def skill_get(sid):
+    allsk = skills.all_skills()
+    s = allsk.get(sid)
+    if not s:
+        abort(404)
+    return ok(skill=skill_view(sid, s, allsk, g.u, full=True))
+
+
+@app.get('/api/skills-file')
+@login_required
+def skill_file():
+    p = request.args.get('path', '')
+    if not p.startswith(('skills/', 'registry/')) or '..' in p:
+        abort(404)
+    return ok(text=skills.file_text(p))
+
+
+def _open_skill_request(kind, s, files, u, report=None, note=''):
+    scope = _scope_of(s)
+    pr = skills.open_pr(kind, s, files, f"{u['name']} {u['title']} ({u['team']})",
+                        body=(f"## {KIND_NAME[kind]} — {s['name']} v{s['version']}\n\n- 범위: {scope} · 위치 `{skills.skill_dir(s)}`\n"
+                              f"- 상속: {', '.join(map(str, s.get('extends') or []))}\n- 요청: {u['name']} {u['title']} ({u['team']})\n"
+                              + (f"- 메모: {note}\n" if note else '')
+                              + (f"\n### 검증 리포트\n{_report_md(report)}\n" if report else '')
+                              + "\n_코쇠오피스가 만든 PR입니다. 가상 조직·가상 데이터._\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"),
+                        scope_label='scope:user' if scope == 'me' else 'scope:org')
+    rid = core.new_id('r')
+    hist = [{'t': now(), 'who': f"{u['name']} {u['title']}", 'act': KIND_NAME[kind] + ' 요청', 'note': note}]
+    fmts = [f['fmt'] for f in s.get('forms') or []] or ['hwp']
+    org = (s.get('org') or '').split('/')
+    g.con.execute('insert into requests values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                  (rid, s['name'], fmts[0], scope, u['id'], org[0] if s.get('scope') == 'org' else u['dept'],
+                   (org[1] if len(org) > 1 else '') if s.get('scope') == 'org' else u['team'], SCOPE_STAGES[scope][0],
+                   json.dumps([f['name'] for f in s.get('forms') or []], ensure_ascii=False), '[]', '', '[]', pr['branch'], pr['pr'], pr['url'],
+                   skills.skill_dir(s), json.dumps({'kind': kind, 'sid': s['id'], 'version': s['version'], 'report': report}, ensure_ascii=False),
+                   json.dumps(hist, ensure_ascii=False), now(), now()))
+    log(u['name'], f"{KIND_NAME[kind]} 요청 — {s['name']} v{s['version']} · " + (f"PR #{pr['pr']}" if pr['pr'] else '로컬 브랜치 ' + pr['branch']))
+    r = row(g.con, 'select * from requests where id=?', rid)
+    if r['stage'] == 'ci':                     # 개인 스킬: 자동 검사 통과 시 바로 병합
+        errs = skills.validate(s, skills.all_skills() | {s['id']: s})
+        if errs:
+            _advance(r, {'name': '자동 검사', 'title': '', 'id': ''}, False, '; '.join(errs)[:300])
+        else:
+            _advance(r, {'name': '자동 검사', 'title': '(validate.py)', 'id': ''}, True, '스키마·상속·잠금·보안 검사 통과')
+    return row(g.con, 'select * from requests where id=?', rid)
+
+
+def _report_md(rep):
+    if not rep:
+        return ''
+    lines = ['| 기준 | 결과 | 내용 |', '|---|---|---|']
+    for c in rep.get('criteria', []):
+        lines.append(f"| {c['name']} | {'✅' if c['pass'] else '❌'} | {c.get('detail', '')} |")
+    lines.append(f"\n스킬 사용 {rep.get('with_score', 0)}점 / 미사용 {rep.get('without_score', 0)}점")
+    return '\n'.join(lines)
+
+
+@app.post('/api/skills/<sid>/change')
+@login_required
+def skill_change(sid):
+    """팩 변경(고정 문구·규칙·검수 규칙) → 버전 올림 → PR → 승인 후 다음 문서부터 반영."""
+    skills.ensure(force=True)
+    allsk = skills.all_skills()
+    s = allsk.get(sid)
+    if not s:
+        abort(404)
+    if not _can_change(s, g.u):
+        return err('이 스킬의 변경을 요청할 권한이 없습니다', 403)
+    b = request.json or {}
+    new = {k: v for k, v in s.items() if not k.startswith('_')}
+    if 'blocks' in b:
+        new['blocks'] = [{'id': x.get('id') or f'b{i + 1}', 'heading': x.get('heading', ''), 'text': x['text']} for i, x in enumerate(b['blocks']) if x.get('text')]
+    if 'rules' in b:
+        new['rules'] = [x for x in b['rules'] if x]
+    if 'checks' in b:
+        new['checks'] = b['checks']
+    new['version'] = skills.bump(s['version'], 'minor')
+    errs = skills.validate(new, allsk)
+    if errs:
+        return err('검사 실패: ' + '; '.join(errs))
+    rel = s['_path'] + '/kosoe-skill.yaml'
+    r = _open_skill_request('update', {**new, '_path': s['_path']}, {rel: skills.dump_skill(new)}, g.u, note=b.get('note', ''))
+    return ok(request=req_view(r, g.u))
+
+
+@app.post('/api/skills/<sid>/revert')
+@login_required
+def skill_revert(sid):
+    """이전 승인 버전(태그)의 내용으로 되돌리는 PR. 버전 번호는 앞으로(패치)."""
+    skills.ensure(force=True)
+    allsk = skills.all_skills()
+    s = allsk.get(sid)
+    if not s:
+        abort(404)
+    if not _can_change(s, g.u):
+        return err('이 스킬의 복구를 요청할 권한이 없습니다', 403)
+    tag = (request.json or {}).get('tag', '')
+    if tag not in skills.tags_of(sid):
+        return err('없는 태그입니다')
+    old = skills.files_at(tag, s['_path'])
+    yml = old.get(s['_path'] + '/kosoe-skill.yaml')
+    if not yml:
+        return err('그 태그 시점의 스킬 파일을 찾지 못했습니다')
+    od = yaml.safe_load(yml)
+    od['version'] = skills.bump(s['version'], 'patch')
+    files = {k: v for k, v in old.items()}
+    files[s['_path'] + '/kosoe-skill.yaml'] = skills.dump_skill(od)
+    for f in skills.tree(sid):                       # 그 뒤에 생긴 파일은 지운다
+        if f not in files:
+            files[f] = None
+    r = _open_skill_request('revert', {**od, '_path': s['_path']}, files, g.u, note=f'{tag} 내용으로 복구')
+    return ok(request=req_view(r, g.u))
+
+
+# ───────────── ★ 스킬 빌더: 첨부 → 분석 → 상속 기반 생성 → 검증 → 등록 ─────────────
+def _slug(name, uid):
+    base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    return (base[:20] or 'skill') + '-' + uid + '-' + format(int(time.time()) % 46656, 'x')
+
+
+def _parent_skill(u, scope, allsk):
+    """상속할 가장 가까운 조직 스킬: 개인 → 내 팀 → 내 본부, 팀 → 내 본부."""
+    team_path = f"{u['dept']}/{u['team']}"
+    cands = []
+    if scope == 'me':
+        cands += [s for s in allsk.values() if s.get('scope') == 'org' and s.get('org') == team_path]
+    if scope in ('me', 'team'):
+        cands += [s for s in allsk.values() if s.get('scope') == 'org' and s.get('org') == u['dept']]
+    return cands[0] if cands else None
+
+
+def _nearest_corp_form(outline, fmt):
+    best, score = None, -1
+    for f in skills.corp_forms():
+        if f['fmt'] != fmt:
+            continue
+        a, b = set(outline), set(f['outline'])
+        sc = len(a & b) / max(1, len(a | b))
+        sc += sum(1 for h in outline for x in f['outline'] if h != x and (h in x or x in h)) * 0.1
+        if sc > score:
+            best, score = f, sc
+    return best, round(max(score, 0), 2)
+
+
+def _highlights(docs, fixed, outline):
+    out = []
+    for d in docs:
+        lines = []
+        for l in (d['text'] or '').splitlines()[:80]:
+            s = l.strip()
+            if not s:
+                continue
+            kind = 'fixed' if any(f['text'] and (f['text'] in s or s in f['text']) and len(s) > 8 for f in fixed) else \
+                   'head' if any(h == s or (len(s) <= 26 and h in s) for h in outline) else \
+                   'var' if checks.NUM_RX.search(s) or re.search(r'20\d\d\.\s*\d', s) else ''
+            lines.append({'t': s[:160], 'k': kind})
+        out.append({'name': d['name'], 'lines': lines})
+    return out
+
+
+@app.post('/api/skillgen/analyze')
+@login_required
+def skillgen_analyze():
+    b = request.json or {}
+    files = _uploads(b.get('upload_ids'))
+    if not files:
+        return err('DRM이 없는 대표 문서(초안·기존 문서)를 1건 이상 올려 주세요')
+    scope = b.get('scope') if b.get('scope') in ('me', 'team', 'dept') else 'me'
+    req_text = (b.get('request') or '').strip()
+    docs = []
+    for f in files:
+        r = extract.read(f['path'], f['name'])
+        docs.append({'name': f['name'], 'text': f['text'] or '', 'heads': r['heads'], 'kind': f['kind']})
+    out, meta = llm.extract(docs, ai_ctx())
+    kinds = [d['kind'] for d in docs]
+    fmt = 'ppt' if 'pptx' in kinds else 'web' if 'html' in kinds else 'hwp'
+    if re.search(r'PPT|발표|제안서|덱', req_text, re.I) and 'hwp' not in kinds:
+        fmt = 'ppt'
+    outline = []
+    for h in out.get('outline') or []:
+        h = re.sub(r'\s*\(.*?\)\s*$', '', str(h)).strip()
+        if h and len(h) <= 16 and not re.search(r'표지|목차|결재', h) and h not in outline:
+            outline.append(h)
+    outline = outline[:8] or ['개요', '주요 내용', '향후 계획']
+    base, sim = _nearest_corp_form(outline, fmt)
+    allsk = skills.all_skills()
+    parent = _parent_skill(g.u, scope, allsk)
+    name = (req_text and re.sub(r'\s*(스킬|팩)?\s*(만들어\s*줘|만들어|생성해\s*줘|해\s*줘)\s*$', '', req_text).strip(' ."')) or out.get('name_suggest') or '나의 문서 스킬'
+    if not name.endswith(('팩', '스킬')):
+        name += ' 팩'
+    sid = _slug(base['id'] if base else fmt, g.u['id'])
+    blocks = []
+    for x in out.get('fixed') or []:
+        t = re.sub(r'^\s*[(\[]([^)\]]{1,8})[)\]]\s*', '', str(x.get('text') or '')).strip()
+        if len(t) >= 8 and t not in [b['text'] for b in blocks]:
+            h = str(x.get('heading') or '')
+            blocks.append({'id': f'b{len(blocks) + 1}', 'heading': h if h in outline else next((o for o in outline if o in h or h in o), h), 'text': t})
+    blocks = blocks[:6]
+    corp_ext = {'hwp': 'corp:koscom-hwp-report', 'ppt': 'corp:koscom-doc-pack#ppt-master', 'web': 'corp:koscom-webslide'}[fmt]
+    extends = ([f"skill:{parent['id']}"] if parent else []) + [corp_ext, 'corp:kosoe-illustrations']
+    draft = {'id': sid, 'name': name[:40], 'scope': 'user' if scope == 'me' else 'org', 'version': '1.0.0', 'grade': 'i', 'extends': extends,
+             'forms': [{'id': 'main', 'name': name[:40].replace(' 팩', ''), 'fmt': fmt, 'use': '보고', 'outline': outline,
+                        'desc': f"{len(docs)}건의 대표 문서로 만든 {FMT[fmt]} 양식", **({'preset': base['preset']} if base and base.get('preset') else {}),
+                        'blocks': [x['id'] for x in blocks]}],
+             'blocks': blocks, 'glossary': {'terms': {}, 'banned': []}, 'checks': {'required': [], 'banned': []},
+             'rules': [r for r in out.get('rules') or [] if r][:6]}
+    if scope == 'me':
+        draft['owner'] = g.u['id']
+    else:
+        draft['org'] = g.u['dept'] if scope == 'dept' else f"{g.u['dept']}/{g.u['team']}"
+        draft['owner'] = g.u['name']
+    jid = core.new_id('j')
+    analysis = {'base': {'id': base['id'], 'name': base['name'], 'similarity': sim} if base else None,
+                'parent': {'id': parent['id'], 'name': parent['name'], 'version': parent['version']} if parent else None,
+                'highlights': _highlights(docs, blocks, outline), 'fields': out.get('fields') or [], 'meta': meta,
+                'docs': [{'name': d['name'], 'heads': d['heads'], 'kind': d['kind']} for d in docs]}
+    g.con.execute('insert into skill_jobs values(?,?,?,?,?,?,?,?,?,?,?,?)',
+                  (jid, g.u['id'], req_text, scope, 'analyzed', json.dumps([f['id'] for f in files]), json.dumps(analysis, ensure_ascii=False),
+                   json.dumps(draft, ensure_ascii=False), '', '', now(), now()))
+    log(g.u['name'], f"스킬 빌더 ② 분석 — 대표 문서 {len(files)}건 · 기반 {base['id'] if base else '-'} · 상위 {parent['id'] if parent else '전사'} · {meta['label']} {meta['ms']}ms")
+    return ok(job={'id': jid, 'draft': draft, 'analysis': analysis, 'scope': scope})
+
+
+def _bp_score(bp, form, blocks, memo):
+    heads = [s['heading'] for s in bp['sections']]
+    outline = form['outline']
+    # 구성 재현: 기대 목차 순서대로 몇 개가 같은 순서로 나오는가(LCS 비율)
+    m, n = len(outline), len(heads)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m):
+        for j in range(n):
+            dp[i + 1][j + 1] = dp[i][j] + 1 if outline[i] == heads[j] or outline[i] in heads[j] else max(dp[i][j + 1], dp[i + 1][j])
+    struct = dp[m][n] / max(1, m)
+    text = checks.bp_text(bp)
+    fixed_ok = all(b['text'] in text for b in blocks) if blocks else True
+    src_vals = [v for v in checks.extract_values(memo)]
+    got = checks.extract_values(text)
+    lost = [v['raw'] for v in src_vals if not any(abs(x['value'] - v['value']) < 1e-9 and x['unit'] == v['unit'] for x in got)]
+    def derived(x):
+        same = [v['value'] for v in src_vals if v['unit'] == x['unit']]
+        if abs(sum(same) - x['value']) < 1e-9:
+            return True
+        return any(abs(a + c - x['value']) < 1e-9 for i, a in enumerate(same) for c in same[i + 1:])
+    new = [x['raw'] for x in got if x['unit'] not in ('일', '회') and not any(abs(x['value'] - v['value']) < 1e-9 for v in src_vals) and not derived(x)]
+    gram = [c for c in engines.check(bp) if c['id'] in ('date', 'long', 'end') and not c['ok']]
+    return {'struct': round(struct, 3), 'fixed': fixed_ok, 'lost': lost[:5], 'new': new[:5], 'grammar': [c['name'] for c in gram]}
+
+
+def _criteria_pass(sc):
+    return [sc['struct'] >= 0.95, sc['fixed'], not sc['lost'] and not sc['new'], not sc['grammar']]
+
+
+@app.post('/api/skillgen/<jid>/evaluate')
+@login_required
+def skillgen_evaluate(jid):
+    """④ 충분한 검증: 대표 문서에서 만든 과제(메모 → 기대 구성·고정 문구·숫자)를 스킬 사용/미사용으로 채점."""
+    j = row(g.con, 'select * from skill_jobs where id=? and owner=?', jid, g.u['id'])
+    if not j:
+        abort(404)
+    b = request.json or {}
+    draft = b.get('draft') or J(j['skill'])
+    allsk = skills.all_skills()
+    errs = skills.validate(draft, allsk)
+    form = draft['forms'][0]
+    blocks = [x for x in draft.get('blocks') or [] if x['id'] in (form.get('blocks') or [])] or draft.get('blocks') or []
+    files = _uploads(J(j['files'], []))[:3]
+    # 상속 해석: 상위 스킬의 고정 문구·규칙도 함께
+    parent_blocks, parent_rules = [], []
+    for e in draft.get('extends') or []:
+        if str(e).startswith('skill:') and e.split(':', 1)[1] in allsk:
+            r = skills.resolve(e.split(':', 1)[1], allsk)
+            parent_rules = r['rules']
+            own = {x['text'] for x in blocks}
+            parent_blocks = [{'heading': x.get('heading', ''), 'text': x['text']} for x in r['blocks'].values() if x['text'] not in own]
+    rules = '\n'.join((draft.get('rules') or []) + parent_rules)
+    with_t = {'name': form['name'], 'desc': form.get('desc', ''), 'outline': json.dumps(form['outline'], ensure_ascii=False),
+              'fixed': json.dumps(blocks + parent_blocks, ensure_ascii=False), 'rules': rules}
+    without_t = {'name': '일반 문서', 'desc': '', 'outline': json.dumps(['개요', '주요 내용', '향후 계획'], ensure_ascii=False), 'fixed': '[]', 'rules': ''}
+    tasks = []
+    ctx = ai_ctx(fast=True)
+
+    def memo_of(f):
+        fixed_texts = [x['text'] for x in blocks]
+        lines = [l.strip() for l in (f['text'] or '').splitlines() if l.strip() and not any(ft in l for ft in fixed_texts)]
+        keep = [l for l in lines if checks.NUM_RX.search(l) or len(l) > 12][:14]
+        return '다음 메모로 같은 종류의 문서를 써 줘.\n' + '\n'.join(keep)
+
+    results = [None] * len(files)
+
+    def run(i, f):
+        memo = memo_of(f)
+        bw, mw = llm.blueprint(with_t, memo, [], ctx)
+        bw = checks.enforce_fixed(bw, blocks + parent_blocks)
+        bo, mo = llm.blueprint(without_t, memo, [], ctx)
+        results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo), 'without': _bp_score(bo, form, blocks, memo),
+                      'mode': mw['mode'], 'ms': mw['ms'] + mo['ms']}
+
+    th = [threading.Thread(target=run, args=(i, f)) for i, f in enumerate(files)]
+    for t in th:
+        t.start()
+    for t in th:
+        t.join(timeout=600)
+    tasks = [r for r in results if r]
+    wsc = sum(sum(_criteria_pass(t['with'])) for t in tasks)
+    osc = sum(sum(_criteria_pass(t['without'])) for t in tasks)
+    full = 4 * max(1, len(tasks))
+    pii = [e for e in errs if e.startswith('보안')]
+    need = 1 if draft.get('scope') == 'user' else 3
+    crit = [
+        {'id': 'struct', 'name': '구성 재현(≥95%)', 'pass': bool(tasks) and all(t['with']['struct'] >= 0.95 for t in tasks),
+         'detail': ', '.join(f"{t['with']['struct'] * 100:.0f}%" for t in tasks)},
+        {'id': 'fixed', 'name': '고정 문구 글자 그대로', 'pass': bool(tasks) and all(t['with']['fixed'] for t in tasks), 'detail': f'{len(blocks)}개 블록'},
+        {'id': 'numbers', 'name': '숫자·사실 보존', 'pass': bool(tasks) and all(not t['with']['lost'] and not t['with']['new'] for t in tasks),
+         'detail': '; '.join(f"빠짐 {t['with']['lost']} 새 숫자 {t['with']['new']}" for t in tasks if t['with']['lost'] or t['with']['new'])},
+        {'id': 'grammar', 'name': '보고 문법(3줄·명사형·날짜)', 'pass': bool(tasks) and all(not t['with']['grammar'] for t in tasks),
+         'detail': '; '.join(', '.join(t['with']['grammar']) for t in tasks if t['with']['grammar'])},
+        {'id': 'security', 'name': '보안(실명·연락처·계좌 없음)', 'pass': not pii, 'detail': '; '.join(pii)},
+        {'id': 'compare', 'name': '효과 비교(스킬 사용 > 미사용)', 'pass': wsc > osc, 'detail': f'사용 {wsc}/{full} · 미사용 {osc}/{full}'},
+        {'id': 'human', 'name': f'사람 확인(시범 작성 {need}건 👍)', 'pass': False, 'detail': '아래에서 확인', 'human': need},
+    ]
+    report = {'criteria': crit, 'tasks': tasks, 'with_score': wsc, 'without_score': osc, 'full': full, 'errors': errs,
+              'auto_pass': all(c['pass'] for c in crit if c['id'] != 'human') and not errs}
+    g.con.execute("update skill_jobs set skill=?, report=?, stage='evaluated', updated=? where id=?",
+                  (json.dumps(draft, ensure_ascii=False), json.dumps(report, ensure_ascii=False), now(), jid))
+    log(g.u['name'], f"스킬 빌더 ④ 검증 — {draft['id']} · 사용 {wsc}/{full} vs 미사용 {osc}/{full} · 자동 기준 {'통과' if report['auto_pass'] else '미통과'}")
+    return ok(report=report, draft=draft)
+
+
+def _skill_md(d, analysis):
+    form = d['forms'][0]
+    blocks = '\n'.join(f"- {b.get('heading') or '고정'}: {b['text']}" for b in d.get('blocks') or []) or '- (없음)'
+    rules = '\n'.join(f'- {r}' for r in d.get('rules') or []) or '- (상위 스킬 규칙을 따른다)'
+    base = (analysis or {}).get('base') or {}
+    return (f"---\nname: {d['id']}\ndescription: {d['name']} — {form['desc']}. 상위 스킬과 전사 공용 스킬을 상속하고 이 부서의 구성·고정 문구·규칙만 더한다.\n---\n\n"
+            f"# {d['name']}\n\n- 상속: {', '.join(d['extends'])}. 전사 지침은 그대로 따르고 아래만 덧붙인다.\n"
+            f"- 기반 양식: {base.get('name', '-')} (유사도 {base.get('similarity', '-')})\n- 형식: {FMT[form['fmt']]}\n"
+            f"- 구성(이 순서와 제목 그대로): {' → '.join(form['outline'])}\n\n## 고정 문구(글자 그대로)\n{blocks}\n\n## 작성 규칙\n{rules}\n\n"
+            f"## 검증\n`evals/`의 과제(메모 → 기대 구성·고정 문구·숫자)로 채점한다. 원문은 저장하지 않았다.\n")
+
+
+@app.post('/api/skillgen/<jid>/submit')
+@login_required
+def skillgen_submit(jid):
+    j = row(g.con, 'select * from skill_jobs where id=? and owner=?', jid, g.u['id'])
+    if not j:
+        abort(404)
+    b = request.json or {}
+    draft = J(j['skill'])
+    report = J(j['report'], {})
+    if not report:
+        return err('먼저 ④ 검증을 실행해 주세요')
+    thumbs = int(b.get('thumbs') or 0)
+    need = next((c['human'] for c in report['criteria'] if c['id'] == 'human'), 3)
+    for c in report['criteria']:
+        if c['id'] == 'human':
+            c['pass'] = thumbs >= need
+            c['detail'] = f'{thumbs}/{need}건 확인'
+    if not report.get('auto_pass') or thumbs < need:
+        return err('검증 기준을 모두 통과해야 등록할 수 있습니다' + ('' if report.get('auto_pass') else ' (자동 채점 미통과)'))
+    analysis = J(j['analysis'], {})
+    path = skills.skill_dir(draft)
+    files = {f'{path}/kosoe-skill.yaml': skills.dump_skill(draft), f'{path}/SKILL.md': _skill_md(draft, analysis)}
+    for i, t in enumerate(report.get('tasks') or [], 1):
+        files[f'{path}/evals/case-{i}/prompt.md'] = t['memo'] + '\n'
+        files[f'{path}/evals/case-{i}/case.yaml'] = yaml.safe_dump(
+            {'expect': {'outline': draft['forms'][0]['outline'], 'fixed': [x['text'] for x in draft.get('blocks') or []]},
+             'score': {'with': t['with'], 'without': t['without']}}, allow_unicode=True, sort_keys=False)
+    r = _open_skill_request('new', {**draft, '_path': path}, files, g.u, report=report, note=j['request'] or '')
+    g.con.execute("update skill_jobs set stage='submitted', report=?, request_id=?, updated=? where id=?",
+                  (json.dumps(report, ensure_ascii=False), r['id'], now(), jid))
+    return ok(request=req_view(r, g.u))
+
+
+# ───────────── 등록 요청 · 승인 ─────────────
+def _approver_ok(req, u):
+    st = req['stage']
+    return ((st == 'lead' and u['role'] == 'lead' and u['team'] == req['team']) or
+            (st == 'dept' and u['role'] == 'deptAdmin' and u['dept'] == req['dept']) or
+            (st == 'corp' and u['role'] == 'corpAdmin'))
+
+
+def req_view(r, u):
+    o = dict(r)
+    for k in ('outline', 'fields', 'fixed', 'history'):
+        o[k] = J(r[k], [])
+    o['stages'] = SCOPE_STAGES.get(r['scope'], ['lead'])
+    o['stage_name'] = STAGE_NAME.get(r['stage'], r['stage'])
+    o['can_decide'] = _approver_ok(r, u)
+    me = core.get_user(g.con, r['requester'])
+    o['requester_name'] = f"{me['name']} {me['title']}" if me else r['requester']
+    o['note'] = J(r['note'], {})
+    o['kind_name'] = KIND_NAME.get(o['note'].get('kind'), '등록')
+    return o
+
+
+@app.get('/api/requests')
+@login_required
+def req_list():
+    u = g.u
+    out = []
+    for r in rows(g.con, 'select * from requests order by created desc'):
+        mine = r['requester'] == u['id']
+        if mine or _approver_ok(r, u) or u['role'] in ('corpAdmin', 'security') or (u['role'] == 'lead' and r['team'] == u['team']) \
+                or (u['role'] == 'deptAdmin' and r['dept'] == u['dept']):
+            out.append(req_view(r, u))
+    return ok(requests=out)
+
+
+def _advance(r, u, approve, note):
+    hist = J(r['history'], [])
+    stages = SCOPE_STAGES.get(r['scope'], ['lead'])
+    who = f"{u['name']} {u['title']}".strip()
+    meta = J(r['note'], {})
+    if not approve:
+        hist.append({'t': now(), 'who': who, 'act': STAGE_NAME[r['stage']].replace('승인', '반려').replace('자동 검사', '자동 검사 실패'), 'note': note})
+        g.con.execute('update requests set stage=?, history=?, updated=? where id=?', ('rejected', json.dumps(hist, ensure_ascii=False), now(), r['id']))
+        threading.Thread(target=skills.close, args=(r['pr_number'], note or '사유 없음'), daemon=True).start()
+        log(u['name'] or '시스템', f"{KIND_NAME.get(meta.get('kind'), '등록')} 반려 — {r['name']}: {note}")
+        return
+    hist.append({'t': now(), 'who': who, 'act': STAGE_NAME[r['stage']], 'note': note})
+    skills.comment(r['pr_number'], f"✅ **{STAGE_NAME[r['stage']]}** — {who}" + (f"\n\n> {note}" if note else '') + '\n\n_코쇠오피스 승인 기록_')
+    i = stages.index(r['stage'])
+    if i + 1 < len(stages):
+        nxt = stages[i + 1]
+        g.con.execute('update requests set stage=?, history=?, updated=? where id=?', (nxt, json.dumps(hist, ensure_ascii=False), now(), r['id']))
+        return
+    try:
+        tag = skills.merge(r['pr_number'], r['branch'], meta['sid'], meta['version'], who)
+    except Exception as e:
+        hist.append({'t': now(), 'who': '시스템', 'act': '병합 실패', 'note': str(e)[:200]})
+        g.con.execute('update requests set history=?, updated=? where id=?', (json.dumps(hist, ensure_ascii=False), now(), r['id']))
+        log('시스템', f'병합 실패: {e}')
+        raise
+    hist.append({'t': now(), 'who': '시스템', 'act': f'병합 · 태그 {tag}', 'note': '다음 문서부터 반영'})
+    g.con.execute('update requests set stage=?, history=?, updated=? where id=?', ('done', json.dumps(hist, ensure_ascii=False), now(), r['id']))
+    g.con.commit()
+    sync_forms(force=True)
+    log(u['name'] or '시스템', f"{KIND_NAME.get(meta.get('kind'), '등록')} 완료 — {r['name']} · {tag}")
+
+
+@app.post('/api/requests/<rid>/decide')
+@login_required
+def req_decide(rid):
+    r = row(g.con, 'select * from requests where id=?', rid)
+    if not r:
+        abort(404)
+    if not _approver_ok(r, g.u):
+        return err('지금 단계의 승인권자가 아닙니다', 403)
+    b = request.json or {}
+    try:
+        _advance(r, g.u, bool(b.get('approve')), (b.get('note') or '').strip())
+    except Exception as e:
+        return err(f'저장소 병합 실패: {e}', 500)
+    return ok(request=req_view(row(g.con, 'select * from requests where id=?', rid), g.u))
+
+
+# ───────────── 인터넷망 사용 신청 ─────────────
+def ireq_view(r, u):
+    o = dict(r)
+    o['feats'] = J(r['feats'], [])
+    x = core.get_user(g.con, r['uid'])
+    o['user'] = f"{x['name']} {x['title']} · {x['team']}" if x else r['uid']
+    o['can_decide'] = _ireq_approver(r, u) and r['status'] == 'wait'
+    o['can_revoke'] = r['status'] == 'ok' and (u['role'] == 'security' or _ireq_approver(r, u))
+    return o
+
+
+def _ireq_approver(r, u):
+    x = core.get_user(g.con, r['uid'])
+    if x['role'] in ('lead', 'deptAdmin', 'corpAdmin', 'security') or not core.lead_of(g.con, x['team']):
+        return u['role'] == 'security' and u['id'] != x['id']
+    return u['role'] == 'lead' and u['team'] == x['team']
+
+
+@app.get('/api/ireq')
+@login_required
+def ireq_list():
+    out = [ireq_view(r, g.u) for r in rows(g.con, 'select * from ireq order by created desc')
+           if r['uid'] == g.u['id'] or _ireq_approver(r, g.u) or g.u['role'] == 'security']
+    pol = {r['k']: J(r['v'], r['v']) for r in rows(g.con, 'select * from policy')}
+    return ok(requests=out, policy=pol, active=core.inet_active(g.con, g.u['id']))
+
+
+@app.post('/api/ireq')
+@login_required
+def ireq_new():
+    b = request.json or {}
+    mx = int(row(g.con, "select v from policy where k='maxDays'")['v'])
+    days = max(1, min(int(b.get('days') or 7), mx))
+    purpose = (b.get('purpose') or '').strip()
+    if len(purpose) < 5:
+        return err('사용 목적을 5자 이상 적어 주세요')
+    if row(g.con, "select id from ireq where uid=? and status='wait'", g.u['id']):
+        return err('이미 대기 중인 신청이 있습니다')
+    iid = core.new_id('i')
+    g.con.execute('insert into ireq values(?,?,?,?,?,?,?,?,?,?)', (iid, g.u['id'], g.u['team'], purpose, days,
+                                                               json.dumps(b.get('feats') or ['ai'], ensure_ascii=False), 'wait', '', '', now()))
+    log(g.u['name'], f'인터넷망 사용 신청 — {days}일 · {purpose}')
+    return ok()
+
+
+@app.post('/api/ireq/<iid>/decide')
+@login_required
+def ireq_decide(iid):
+    r = row(g.con, 'select * from ireq where id=?', iid)
+    if not r:
+        abort(404)
+    b = request.json or {}
+    if b.get('revoke'):
+        if not ireq_view(r, g.u)['can_revoke']:
+            return err('회수 권한이 없습니다', 403)
+        g.con.execute("update ireq set status='revoked', decided_by=? where id=?", (g.u['name'], iid))
+        g.con.execute("update users set net='closed' where id=?", (r['uid'],))
+        log(g.u['name'], f"인터넷망 권한 회수 — {core.get_user(g.con, r['uid'])['name']}")
+        return ok()
+    if not (_ireq_approver(r, g.u) and r['status'] == 'wait'):
+        return err('승인 권한이 없습니다', 403)
+    if b.get('approve'):
+        days = max(1, min(int(b.get('days') or r['days']), int(row(g.con, "select v from policy where k='maxDays'")['v'])))
+        g.con.execute("update ireq set status='ok', days=?, until=?, decided_by=? where id=?", (days, core.until_date(days), g.u['name'], iid))
+        log(g.u['name'], f"인터넷망 사용 승인 — {core.get_user(g.con, r['uid'])['name']} {days}일 (~{core.until_date(days)})")
+    else:
+        g.con.execute("update ireq set status='no', decided_by=? where id=?", (g.u['name'], iid))
+        log(g.u['name'], f"인터넷망 사용 반려 — {core.get_user(g.con, r['uid'])['name']}")
+    return ok()
+
+
+@app.put('/api/policy')
+@login_required
+def policy_put():
+    if g.u['role'] not in ('security', 'corpAdmin'):
+        return err('권한이 없습니다', 403)
+    b = request.json or {}
+    if 'maxDays' in b:
+        g.con.execute("update policy set v=? where k='maxDays'", (str(max(1, min(int(b['maxDays']), 90))),))
+    if 'mask' in b:
+        g.con.execute("update policy set v=? where k='mask'", (json.dumps([m for m in b['mask'] if m in llm.MASK_RX], ensure_ascii=False),))
+    log(g.u['name'], '보안 정책 변경')
+    return ok()
+
+
+@app.post('/api/mask-test')
+@login_required
+def mask_test():
+    pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
+    m = llm.Masker(pol)
+    return ok(masked=m.mask((request.json or {}).get('text', '')), map=m.map)
+
+
+# ───────────── 대시보드 · 로그 · 시연 ─────────────
+@app.get('/api/dashboard')
+@login_required
+def dashboard():
+    c = g.con
+    docs_ = rows(c, 'select * from docs')
+    files = rows(c, 'select * from doc_files')
+    saved, real = 0, 0
+    for d in docs_:
+        m = J(d['made'], {})
+        if m.get('manual'):
+            saved += m['manual'] - m['minutes']
+            real += 1
+    llm_n = sum(1 for f in files if J(f['llm'], {}).get('mode') == 'llm')
+    by_fmt = {k: sum(1 for f in files if f['fmt'] == k) for k in FMT}
+    checks_ok = sum(1 for f in files if all(x['ok'] or x['id'] in ('todo', 'cross') for x in J(f['checks'], [])))
+    tops = rows(c, 'select name, uses, fmt, scope from templates order by uses desc limit 8')
+    by_skill = {}
+    for f in files:
+        for s in J(f['resolution'], {}).get('skills') or []:
+            by_skill[s] = by_skill.get(s, 0) + 1
+    return ok(kpi={'docs': len(docs_), 'files': len(files), 'made': real, 'saved_h': round(saved / 60, 1), 'templates': len(rows(c, 'select id from templates')),
+                   'pending': len(rows(c, "select id from requests where stage in ('lead','dept','corp')")),
+                   'inet': len(rows(c, "select id from ireq where status='ok'")), 'llm_rate': round(100 * llm_n / len(files)) if files else 0,
+                   'check_rate': round(100 * checks_ok / len(files)) if files else 0, 'skills': len(skills.all_skills())},
+              by_fmt=by_fmt, tops=tops, by_skill=by_skill,
+              avg_ms={k: round(sum(f['elapsed_ms'] for f in files if f['fmt'] == k) / max(1, by_fmt[k])) for k in FMT})
+
+
+@app.get('/api/events')
+@login_required
+def events():
+    return ok(events=rows(g.con, 'select * from events order by id desc limit 200'))
+
+
+@app.post('/api/sync')
+@login_required
+def sync():
+    st = sync_forms(force=True)
+    log(g.u['name'], f"스킬 저장소 당겨오기 — {st['head'][:7]}")
+    return ok(repo={k: v for k, v in st.items() if k != 'synced'})
+
+
+def boot():
+    core.init_db()
+    sync_forms(force=True)
+    threading.Thread(target=corp.warm, kwargs={'log': lambda m: None}, daemon=True).start()
+
+
+def reset_demo():
+    """시연 초기화: 로컬 DB·결과물·첨부를 지우고, 스킬 저장소의 열린 PR을 닫는다(병합된 이력·태그는 그대로)."""
+    import shutil
+    for p in (core.DB_PATH, engines.OUT, UP, engines.JOBS):
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+        elif os.path.exists(p):
+            os.remove(p)
+    for p in (engines.OUT, UP, engines.JOBS):
+        os.makedirs(p, exist_ok=True)
+    skills.demo_cleanup()
+
+
+if __name__ == '__main__':
+    import sys
+    for s in (sys.stdout, sys.stderr):
+        s.reconfigure(encoding='utf-8', errors='replace')
+    if '--reset' in sys.argv:
+        reset_demo()
+        print('시연 데이터를 초기화했습니다.')
+    port = int(os.environ.get('PORT') or os.environ.get('KOSOE_PORT') or 8810)
+    boot()
+    print(f"코쇠오피스 — http://localhost:{port}  (AI: {llm.display() + ' 연결' if llm.available() else ai_state()['detail'] + ' → 규칙 기반 보조 모드'}"
+          f" · 스킬 저장소 {skills.STATE['mode']} {skills.STATE['head'][:7]})")
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)

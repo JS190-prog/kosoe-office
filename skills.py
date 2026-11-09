@@ -1,0 +1,340 @@
+"""스킬 저장소(kosoe-office-skills) — 정본은 Git, 포털 DB는 캐시.
+
+- 스킬 1개 = 폴더 1개 = kosoe-skill.yaml 1개 (skills/org/<본부>[/<팀>]/<id>/, skills/user/<사용자>/<id>/)
+- 상속: extends = [corp:<전사 스킬 id> ..., skill:<상위 스킬 id>] — 전사 → 본부 → 팀 → 개인 순으로 해석
+- 잠금 키(registry/corp.lock.yaml locked_keys)는 하위 스킬이 바꿀 수 없다
+- 등록·변경 요청 = 브랜치 + PR, 승인 = PR 승인 코멘트 + 병합 + 태그 <id>@v<버전>, 복구 = 이전 태그 내용으로 되돌리는 PR
+"""
+import copy
+import json
+import os
+import re
+import shutil
+import threading
+import time
+
+import yaml
+
+import corp
+from core import CFG, HOME, FMT
+from gitutil import GitError, gh, git, git_remote, have_gh, identity
+
+REPO = os.path.join(HOME, 'skills-repo')
+SLUG = CFG['skills_repo']
+_lock = threading.RLock()
+STATE = {'mode': 'none', 'url': '', 'head': '', 'synced': 0, 'error': ''}
+LOCKED_TOP = {'brand', 'fonts', 'logo', 'grade_label', 'hwp_base'}
+SEMVER = re.compile(r'^\d+\.\d+\.\d+$')
+
+
+# ───────────── 동기화 ─────────────
+def ensure(force=False):
+    """로컬 복제본을 준비하고 원격 main을 당겨 온다(기본 60초에 한 번)."""
+    with _lock:
+        if not force and time.time() - STATE['synced'] < 60 and STATE['head']:
+            return STATE
+        try:
+            if not os.path.isdir(os.path.join(REPO, '.git')):
+                git_remote('clone', '-q', f'https://github.com/{SLUG}.git', REPO, timeout=300)
+            elif not CFG['skills_offline']:
+                git_remote('fetch', '-q', '--prune', '--tags', '--force', 'origin', cwd=REPO, timeout=120)
+                git('checkout', '-q', '-f', 'main', cwd=REPO)
+                git('reset', '-q', '--hard', 'origin/main', cwd=REPO)
+            STATE.update(mode='github', url=f'https://github.com/{SLUG}', error='')
+        except Exception as e:
+            STATE.update(mode='local' if os.path.isdir(os.path.join(REPO, '.git')) else 'none', error=str(e)[:300])
+        if os.path.isdir(os.path.join(REPO, '.git')):
+            STATE['head'] = git('rev-parse', 'HEAD', cwd=REPO, check=False).strip()
+            lk = os.path.join(REPO, 'registry', 'corp.lock.yaml')
+            if os.path.exists(lk):
+                corp.set_lock(yaml.safe_load(open(lk, encoding='utf-8')), STATE['head'])
+        STATE['synced'] = time.time()
+        return STATE
+
+
+# ───────────── 읽기 ─────────────
+def _load(p):
+    d = yaml.safe_load(open(p, encoding='utf-8')) or {}
+    d['_path'] = os.path.relpath(os.path.dirname(p), REPO).replace('\\', '/')
+    return d
+
+
+def all_skills():
+    out = {}
+    base = os.path.join(REPO, 'skills')
+    for dp, dns, fns in os.walk(base):
+        if 'kosoe-skill.yaml' in fns:
+            try:
+                s = _load(os.path.join(dp, 'kosoe-skill.yaml'))
+                out[s['id']] = s
+            except Exception:
+                pass
+    return out
+
+
+def corp_forms():
+    p = os.path.join(REPO, 'registry', 'corp.forms.yaml')
+    return (yaml.safe_load(open(p, encoding='utf-8')) or {}).get('forms', []) if os.path.exists(p) else []
+
+
+def tags_of(sid):
+    out = git('tag', '-l', f'{sid}@v*', '--sort=-creatordate', cwd=REPO, check=False).splitlines()
+    return [t for t in out if t]
+
+
+def file_text(rel):
+    p = os.path.join(REPO, *rel.split('/'))
+    return open(p, encoding='utf-8').read() if os.path.isfile(p) else ''
+
+
+def tree(sid):
+    s = all_skills().get(sid)
+    if not s:
+        return []
+    root = os.path.join(REPO, *s['_path'].split('/'))
+    out = []
+    for dp, dns, fns in os.walk(root):
+        for f in sorted(fns):
+            out.append(os.path.relpath(os.path.join(dp, f), REPO).replace('\\', '/'))
+    return out
+
+
+def history(sid, n=12):
+    s = all_skills().get(sid)
+    if not s:
+        return []
+    log = git('log', '-n', str(n), '--date=format:%m/%d %H:%M', '--pretty=%h\x1f%ad\x1f%an\x1f%s', '--', s['_path'], cwd=REPO, check=False)
+    return [dict(zip(('sha', 't', 'who', 'msg'), l.split('\x1f'))) for l in log.splitlines() if l]
+
+
+# ───────────── 상속 해석 ─────────────
+def chain(sid, skills=None, _seen=None):
+    """sid의 상속 사슬(위 → 아래). 전사 스킬은 'corp:<id>' 문자열로 들어간다."""
+    skills = skills or all_skills()
+    _seen = _seen or set()
+    s = skills.get(sid)
+    if not s or sid in _seen:
+        return []
+    _seen.add(sid)
+    out = []
+    for e in s.get('extends') or []:
+        if str(e).startswith('skill:'):
+            out += chain(e.split(':', 1)[1].split('@')[0], skills, _seen)
+        elif str(e).startswith('corp:') and e not in out:
+            out.append(e)
+    out = list(dict.fromkeys([x for x in out if isinstance(x, str)] )) + [x for x in out if not isinstance(x, str)]
+    return out + [s]
+
+
+def resolve(sid, skills=None):
+    """상속을 합쳐 실제로 쓰는 규칙 묶음과 해석 기록을 만든다."""
+    skills = skills or all_skills()
+    ch = chain(sid, skills)
+    lk = corp.lock()
+    corp_ids = []
+    for x in ch:
+        if isinstance(x, str):
+            cid = x.split(':', 1)[1].split('#')[0]
+            if cid not in corp_ids:
+                corp_ids.append(cid)
+    r = {'blocks': {}, 'glossary': {'terms': {}, 'banned': []}, 'checks': {'required': [], 'banned': []}, 'rules': [],
+         'approval_line': ['담당', '팀장', '부서장'], 'illust_topics': [], 'forms': {}, 'grade': 'i'}
+    levels = []
+    for s in [x for x in ch if isinstance(x, dict)]:
+        levels.append({'id': s['id'], 'name': s.get('name', s['id']), 'version': s.get('version', '0.0.0'), 'scope': s.get('scope'),
+                       'org': s.get('org', ''), 'owner': s.get('owner', ''), 'path': s['_path']})
+        for b in s.get('blocks') or []:
+            r['blocks'][b.get('id') or b.get('heading')] = {**b, 'from': s['id']}
+        g = s.get('glossary') or {}
+        r['glossary']['terms'].update(g.get('terms') or {})
+        r['glossary']['banned'] += [w for w in (g.get('banned') or []) if w not in r['glossary']['banned']]
+        c = s.get('checks') or {}
+        r['checks']['required'] += [w for w in (c.get('required') or []) if w not in r['checks']['required']]
+        r['checks']['banned'] += [w for w in (c.get('banned') or []) if w not in r['checks']['banned']]
+        r['rules'] += [x for x in (s.get('rules') or []) if x not in r['rules']]
+        if s.get('approval_line'):
+            r['approval_line'] = s['approval_line']
+        r['illust_topics'] += [x for x in (s.get('illust_topics') or []) if x not in r['illust_topics']]
+        for f in s.get('forms') or []:
+            r['forms'][f['id']] = {**f, 'from': s['id']}
+        if s.get('grade'):
+            r['grade'] = s['grade']
+    r['resolution'] = {
+        'corp': {cid: (lk['corp_skills'].get(cid) or {}).get('sha', '')[:7] for cid in corp_ids},
+        'skills': [f"{l['id']}@{l['version']}" for l in levels],
+        'repo_head': STATE['head'][:7],
+    }
+    r['levels'] = levels
+    r['corp_ids'] = corp_ids
+    return r
+
+
+# ───────────── 검사 (저장소 CI와 같은 규칙) ─────────────
+PII = [(re.compile(r'01[016-9]-?\d{3,4}-?\d{4}'), '휴대전화번호'), (re.compile(r'\d{6}-[1-4]\d{6}'), '주민등록번호'),
+       (re.compile(r'[\w.+-]+@[\w-]+\.[\w.]+'), '이메일'), (re.compile(r'(?<!\d)\d{3,6}-\d{2,6}-\d{2,8}(?!\d)'), '계좌번호')]
+
+
+def validate(s, skills=None):
+    """오류 목록(비면 통과)."""
+    errs = []
+    for k in ('id', 'name', 'scope', 'version'):
+        if not s.get(k):
+            errs.append(f'필수 항목 없음: {k}')
+    if s.get('version') and not SEMVER.match(str(s['version'])):
+        errs.append('version은 1.2.3 형식')
+    if s.get('scope') not in ('org', 'user'):
+        errs.append('scope는 org 또는 user')
+    bad = LOCKED_TOP & set(s.keys())
+    if bad:
+        errs.append(f"잠금 항목은 하위 스킬에서 바꿀 수 없음(전사 잠금): {', '.join(sorted(bad))}")
+    lk = corp.lock()
+    ext = s.get('extends') or []
+    if not any(str(e).startswith('corp:') for e in ext) and not any(str(e).startswith('skill:') for e in ext):
+        errs.append('extends에 전사 스킬(corp:) 또는 상위 스킬(skill:)이 하나 이상 필요')
+    for e in ext:
+        e = str(e)
+        if e.startswith('corp:') and e.split(':', 1)[1].split('#')[0] not in lk['corp_skills']:
+            errs.append(f'잠금 파일에 없는 전사 스킬: {e}')
+        if e.startswith('skill:') and skills is not None and e.split(':', 1)[1].split('@')[0] not in skills:
+            errs.append(f'없는 상위 스킬: {e}')
+    for f in s.get('forms') or []:
+        if f.get('fmt') not in FMT:
+            errs.append(f"양식 {f.get('id')}: fmt는 hwp|ppt|web")
+        if not f.get('outline'):
+            errs.append(f"양식 {f.get('id')}: outline(장 구성) 없음")
+    text = json.dumps({k: v for k, v in s.items() if not k.startswith('_')}, ensure_ascii=False)
+    for rx, name in PII:
+        if rx.search(text):
+            errs.append(f'보안: {name}로 보이는 값이 스킬에 남아 있음')
+    return errs
+
+
+# ───────────── 양식 카드(포털 갤러리용) ─────────────
+def form_rows():
+    """전사 양식 + 저장소 스킬의 양식 → templates 테이블 행."""
+    rows = []
+    for f in corp_forms():
+        rows.append({'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'use': f.get('use', '보고'), 'scope': 'corp',
+                     'outline': f['outline'], 'desc': f.get('desc', ''), 'preset': f.get('preset', ''), 'grade': f.get('grade', 'i'),
+                     'dept': '', 'team': '', 'owner': '전사', 'ver': '-', 'path': 'registry/corp.forms.yaml', 'tag': '',
+                     'fields': [], 'rules': '', 'fixed': [], 'skill': {'id': '', 'corp': f.get('corp', '')}})
+    skills = all_skills()
+    for sid, s in skills.items():
+        r = resolve(sid, skills)
+        org = (s.get('org') or '').split('/')
+        dept, team = (org + ['', ''])[:2]
+        scope = 'me' if s.get('scope') == 'user' else ('corp' if s.get('share') == 'corp' else ('team' if team else 'dept'))
+        for f in s.get('forms') or []:
+            fixed = [{'heading': b.get('heading', ''), 'text': b['text'], 'id': b.get('id', '')} for b in r['blocks'].values()
+                     if not f.get('blocks') or b.get('id') in f['blocks']]
+            rows.append({'id': f"{sid}:{f['id']}", 'name': f['name'], 'fmt': f['fmt'], 'use': f.get('use', '보고'), 'scope': scope,
+                         'outline': f['outline'], 'desc': f.get('desc', s.get('name', '')), 'preset': f.get('preset', ''),
+                         'grade': f.get('grade', r['grade']), 'dept': dept, 'team': team, 'owner': s.get('owner', ''),
+                         'ver': s.get('version', ''), 'path': s['_path'], 'tag': (tags_of(sid) or [''])[0],
+                         'fields': [], 'rules': '\n'.join(r['rules']), 'fixed': fixed,
+                         'skill': {'id': sid, 'name': s.get('name'), 'version': s.get('version'), 'chain': [l['id'] for l in r['levels']],
+                                   'corp': r['corp_ids'], 'checks': r['checks'], 'glossary': r['glossary']}})
+    return rows
+
+
+# ───────────── 쓰기: 브랜치 · PR · 병합 · 태그 ─────────────
+def skill_dir(s):
+    if s['scope'] == 'user':
+        return f"skills/user/{s['owner']}/{s['id']}"
+    return f"skills/org/{s['org']}/{s['id']}"
+
+
+def dump_skill(s):
+    body = {k: v for k, v in s.items() if not k.startswith('_')}
+    return yaml.safe_dump(body, allow_unicode=True, sort_keys=False, width=1000)
+
+
+def _commit_files(branch, files, message, requested_by):
+    """origin/main에서 새 브랜치를 만들고 files({상대경로: 내용|None})를 커밋·푸시한다."""
+    who = identity()
+    git('checkout', '-q', '-f', '-B', branch, 'origin/main' if STATE['mode'] == 'github' else 'main', cwd=REPO)
+    for rel, content in files.items():
+        p = os.path.join(REPO, *rel.split('/'))
+        if content is None:
+            if os.path.exists(p):
+                os.remove(p)
+            continue
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
+    git('add', '-A', cwd=REPO)
+    git('-c', f"user.name={who['name']}", '-c', f"user.email={who['email']}", 'commit', '-q', '-m',
+        f'{message}\n\nRequested-by: {requested_by}', cwd=REPO)
+    if STATE['mode'] == 'github':
+        git_remote('push', '-q', '-f', '-u', 'origin', branch, cwd=REPO, timeout=180)
+
+
+def open_pr(kind, s, files, requested_by, body, scope_label):
+    """kind: new | update | revert. 돌려주는 값: {'branch','pr','url'}."""
+    with _lock:
+        ensure(force=True)
+        branch = f"skill/{s['scope']}/{s['id']}/v{s['version']}"
+        title = {'new': '스킬 등록', 'update': '스킬 변경', 'revert': '스킬 복구'}[kind] + f": {s['name']} v{s['version']}"
+        try:
+            _commit_files(branch, files, f"skill({s['scope']}): {s['id']} v{s['version']} — {title}", requested_by)
+            if STATE['mode'] != 'github' or not have_gh():
+                return {'branch': branch, 'pr': 0, 'url': ''}
+            for name, color in (('scope:user', '1D76DB'), ('scope:org', 'F26522')):
+                gh('label', 'create', name, '--color', color, '-R', SLUG, check=False)
+            url = gh('pr', 'create', '-R', SLUG, '--base', 'main', '--head', branch, '--label', scope_label,
+                     '--title', title, '--body', body, timeout=120).strip().splitlines()[-1]
+            return {'branch': branch, 'pr': int(url.rstrip('/').split('/')[-1]), 'url': url}
+        finally:
+            git('checkout', '-q', '-f', 'main', cwd=REPO, check=False)
+
+
+def comment(pr, text):
+    if pr and STATE['mode'] == 'github':
+        gh('pr', 'comment', str(pr), '-R', SLUG, '--body', text, check=False)
+
+
+def merge(pr, branch, sid, version, approved_by):
+    """승인 → 병합 + 태그. 돌려주는 값: 태그."""
+    tag = f'{sid}@v{version}'
+    with _lock:
+        if STATE['mode'] == 'github' and pr:
+            gh('pr', 'merge', str(pr), '-R', SLUG, '--merge', '--delete-branch', timeout=180)
+            ensure(force=True)
+        else:
+            git('checkout', '-q', 'main', cwd=REPO)
+            git('merge', '-q', '--no-ff', '-m', f'merge {branch}', branch, cwd=REPO)
+        who = identity()
+        git('-c', f"user.name={who['name']}", '-c', f"user.email={who['email']}", 'tag', '-f', '-a', tag, '-m',
+            f'{tag}\n\nApproved-by: {approved_by}', cwd=REPO)
+        if STATE['mode'] == 'github':
+            git_remote('push', '-q', '-f', 'origin', tag, cwd=REPO, timeout=120, check=False)
+        STATE['synced'] = 0
+        ensure(force=True)
+        return tag
+
+
+def close(pr, reason):
+    if pr and STATE['mode'] == 'github':
+        gh('pr', 'close', str(pr), '-R', SLUG, '--comment', f'반려: {reason}', '--delete-branch', check=False)
+
+
+def files_at(tag, path):
+    """태그 시점의 스킬 폴더 내용 {상대경로: 텍스트}."""
+    names = git('ls-tree', '-r', '--name-only', tag, '--', path, cwd=REPO, check=False).splitlines()
+    return {n: git('show', f'{tag}:{n}', cwd=REPO, binary=True).decode('utf-8') for n in names if n}
+
+
+def bump(v, part='minor'):
+    a, b, c = (int(x) for x in str(v).split('.'))
+    return f'{a}.{b + 1}.0' if part == 'minor' else f'{a}.{b}.{c + 1}'
+
+
+def demo_cleanup(keep_prefixes=('skills/org/',)):
+    """시연 초기화: 열린 PR 닫기, 시연 중 만든 개인 스킬·태그는 그대로 두고 로컬 복제본만 정리."""
+    with _lock:
+        if STATE['mode'] == 'github' and have_gh():
+            out = gh('pr', 'list', '-R', SLUG, '--state', 'open', '--json', 'number', '-q', '.[].number', check=False)
+            for n in out.split():
+                gh('pr', 'close', n, '-R', SLUG, '--comment', '시연 초기화로 닫음', '--delete-branch', check=False)
+        STATE['synced'] = 0
+        ensure(force=True)

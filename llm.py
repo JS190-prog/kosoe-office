@@ -1,0 +1,418 @@
+"""AI 어댑터 한 곳 — 기본은 각 사용자의 Claude Code 구독 CLI. Claude API·OpenAI 호환(사내 모델) 설정도 받는다. 실패하면 규칙 기반으로 대체한다.
+
+모든 함수는 (결과, 메타)를 돌려준다. 메타 = {'mode': 'llm'|'rule', 'model', 'label', 'ms', 'masked', 'error'}
+ctx = {'use_llm': bool, 'label': 화면 표시용 모델 이름, 'mk': Masker | None(인터넷망에서만), 'fast': 빠른 모델 사용}
+"""
+import glob
+import json
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import time
+import urllib.error
+import urllib.request
+
+from core import CFG, DATA
+
+WRITING_RULES = """코스콤 보고 문법을 지킨다.
+- 한 항목은 90자(한글 보고서 3줄) 이내, 명사형 종결(~함, ~임, ~ 추진, ~ 예정). '~합니다/~다.'로 끝내지 않는다.
+- 항목 앞 라벨은 2~6자(예: 기간, 대상, 현황). 없으면 빈 문자열.
+- 숫자·고유명사·날짜는 사용자 요청과 첨부 자료에 있는 것만 쓴다. 없는 사실은 지어내지 말고 '(확인 필요)'로 둔다.
+- [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.
+- 날짜는 '2026. 10. 28' 형식.
+- 장마다 항목 2~4개. 하위 설명이 필요하면 children에 1~2개."""
+
+BP_SCHEMA = '{"title": str, "sections": [{"heading": str, "items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]]} | null}]}'
+
+MASK_RX = {
+    '주민등록번호': re.compile(r'\d{6}-[1-4]\d{6}'),
+    '휴대전화번호': re.compile(r'01[016-9]-?\d{3,4}-?\d{4}'),
+    '계좌번호': re.compile(r'(?<!\d)\d{3,6}-\d{2,6}-\d{2,8}(?!\d)'),
+    '고객사명': re.compile(r'(?<![가-힣A-Za-z])[A-Z가-힣][A-Za-z가-힣]{0,9}?(?:저축은행|증권|은행|생명|화재|캐피탈|자산운용|카드)(?![가-힣])'),
+}
+
+
+class Masker:
+    """인터넷망에서 외부 AI로 보내기 전 민감 정보를 [종류N] 토큰으로 바꾸고, 응답에서 되돌린다."""
+
+    def __init__(self, kinds):
+        self.kinds = [k for k in kinds if k in MASK_RX]
+        self.map = {}
+
+    def mask(self, text):
+        if not text:
+            return text
+        for k in self.kinds:
+            def sub(m, k=k):
+                v = m.group(0)
+                for tok, orig in self.map.items():
+                    if orig == v:
+                        return tok
+                tok = f'[{k}{sum(1 for t in self.map if t.startswith("[" + k)) + 1}]'
+                self.map[tok] = v
+                return tok
+            text = MASK_RX[k].sub(sub, text)
+        return text
+
+    def unmask(self, obj):
+        s = json.dumps(obj, ensure_ascii=False)
+        for tok, orig in self.map.items():
+            s = s.replace(tok, orig)
+        return json.loads(s)
+
+
+def _ctx():
+    # 사내 프록시 인증서가 Python 3.13의 엄격 검사(VERIFY_X509_STRICT)에 걸린다. 체인·호스트 검증은 그대로 둔다.
+    c = ssl.create_default_context()
+    c.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return c
+
+
+# ───────────── Claude Code CLI(구독제) ─────────────
+# API 키 없이, 이 PC에 로그인된 Claude 구독으로 `claude -p`를 호출한다.
+# 도구·MCP·설정 파일·세션 기록을 모두 끄고, 빈 작업 폴더에서 돌려 순수한 '모델 호출'로만 쓴다.
+CLI_DIR = os.path.join(DATA, 'llm-cli')
+os.makedirs(CLI_DIR, exist_ok=True)
+# 데스크톱 앱이 띄운 프로세스에서 물려받으면 앱 내부 인증·프록시로 붙으려다 실패하는 변수들
+CLI_ENV_DROP = ('CLAUDECODE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_SCOPES',
+                'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT')
+_cli_cache = {'t': 0, 'v': None}
+
+
+def cli_path():
+    """KOSOE_CLAUDE_CLI → 데스크톱 앱에 들어 있는 최신 claude.exe → PATH의 claude."""
+    if CFG.get('claude_cli'):
+        return CFG['claude_cli']
+    base = os.path.join(os.environ.get('APPDATA', ''), 'Claude', 'claude-code')
+    found = []
+    for p in glob.glob(os.path.join(base, '*', '*', 'claude.exe')):
+        ver = os.path.basename(os.path.dirname(os.path.dirname(p)))
+        try:
+            found.append((tuple(int(x) for x in ver.split('.')), p))
+        except ValueError:
+            pass
+    if found:
+        return max(found)[1]
+    return shutil.which('claude') or ''
+
+
+def _cli_env():
+    env = {k: v for k, v in os.environ.items() if k not in CLI_ENV_DROP}
+    if CFG.get('claude_token'):   # `claude setup-token`으로 만든 장기 토큰(선택)
+        env['CLAUDE_CODE_OAUTH_TOKEN'] = CFG['claude_token']
+    return env
+
+
+def cli_status(force=False):
+    """로그인 상태(60초 캐시) → {'ready', 'path', 'detail'}"""
+    if not force and time.time() - _cli_cache['t'] < 60 and _cli_cache['v']:
+        return _cli_cache['v']
+    exe = cli_path()
+    v = {'ready': False, 'path': exe, 'detail': ''}
+    if not exe:
+        v['detail'] = 'Claude CLI를 찾지 못했습니다 (.env의 KOSOE_CLAUDE_CLI에 경로 지정)'
+    else:
+        try:
+            r = subprocess.run([exe, 'auth', 'status'], capture_output=True, timeout=30, env=_cli_env(), cwd=CLI_DIR)
+            st = json.loads(r.stdout.decode('utf-8', 'replace') or '{}')
+            v['ready'] = bool(st.get('loggedIn')) or bool(CFG.get('claude_token'))
+            v['detail'] = st.get('authMethod', '') if v['ready'] else '로그인 필요: claude auth login'
+        except Exception as e:
+            v['detail'] = str(e)[:120]
+    _cli_cache.update(t=time.time(), v=v)
+    return v
+
+
+def _call_cli(system, user, model=None):
+    exe = cli_path()
+    if not exe:
+        raise RuntimeError('Claude CLI 없음')
+    args = [exe, '-p', '--output-format', 'json', '--model', model or CFG['llm_model'], '--system-prompt', system,
+            '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence']
+    if CFG.get('llm_effort'):
+        args += ['--effort', CFG['llm_effort']]
+    r = subprocess.run(args, input=user.encode('utf-8'), capture_output=True, timeout=240, env=_cli_env(), cwd=CLI_DIR)
+    out = r.stdout.decode('utf-8', 'replace').strip()
+    try:
+        d = json.loads(out[out.find('{'):]) if '{' in out else {}
+    except json.JSONDecodeError:
+        d = {}
+    if not d:
+        raise RuntimeError('CLI 응답 없음: ' + (r.stderr.decode('utf-8', 'replace') or out)[-200:])
+    if d.get('is_error'):
+        msg = str(d.get('result') or d.get('subtype'))
+        if 'auth' in msg.lower() or 'login' in msg.lower():
+            _cli_cache.update(t=0, v=None)
+            msg += ' → 터미널에서 claude auth login'
+        raise RuntimeError(msg)
+    return d.get('result') or ''
+
+
+def available():
+    if CFG['llm_kind'] == 'rule':
+        return False
+    if CFG['llm_kind'] == 'claude_cli':
+        return cli_status()['ready']
+    return bool(CFG['llm_key'])
+
+
+def display():
+    if CFG['llm_kind'] == 'claude_cli':
+        return f"Claude {CFG['llm_model']} (구독 CLI)"
+    if CFG['llm_kind'] == 'rule':
+        return '규칙 기반'
+    return CFG['llm_model']
+
+
+import threading
+_fast = threading.local()
+
+
+def call(system, user, max_tokens=2500, fast=False):
+    """모델 한 번 호출 → (텍스트, ms). 실패하면 예외. fast=True(또는 ctx['fast'])면 가벼운 일용 빠른 모델."""
+    fast = fast or getattr(_fast, 'on', False)
+    t0 = time.time()
+    model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
+    if CFG['llm_kind'] == 'claude_cli':
+        return _call_cli(system, user, model), int((time.time() - t0) * 1000)
+    if CFG['llm_kind'] == 'openai_compat':
+        url = CFG['llm_base'] + '/v1/chat/completions'
+        body = {'model': model, 'max_tokens': max_tokens, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+        headers = {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['llm_key']}
+    else:
+        url = CFG['llm_base'] + '/v1/messages'
+        body = {'model': model, 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]}
+        headers = {'content-type': 'application/json', 'x-api-key': CFG['llm_key'], 'anthropic-version': '2023-06-01'}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=120, context=_ctx()) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f'HTTP {e.code}: {e.read().decode(errors="ignore")[:200]}')
+    text = data['choices'][0]['message']['content'] if CFG['llm_kind'] == 'openai_compat' else ''.join(b.get('text', '') for b in data['content'])
+    return text, int((time.time() - t0) * 1000)
+
+
+def call_json(system, user, max_tokens=2500, fast=False):
+    text, ms = call(system + '\n\n반드시 JSON 하나만 출력한다. 설명·코드블록 표시 없이.', user, max_tokens, fast)
+    a, b = text.find('{'), text.rfind('}')
+    if a < 0 or b < 0:
+        raise RuntimeError('JSON 응답 없음')
+    return json.loads(text[a:b + 1]), ms
+
+
+def ping():
+    """키·네트워크 확인용 최소 호출."""
+    if not available():
+        return {'ok': False, 'error': cli_status(True)['detail'] if CFG['llm_kind'] == 'claude_cli' else 'KOSOE_LLM_API_KEY 없음'}
+    try:
+        t, ms = call('짧게 답한다.', '"ok" 한 단어만 출력', 10)
+        return {'ok': True, 'ms': ms, 'model': display()}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)[:200]}
+
+
+def _try(ctx, fn_llm, fn_rule):
+    ctx = ctx or {}
+    mk = ctx.get('mk')
+    meta = {'mode': 'rule', 'model': '규칙 기반', 'label': '규칙 기반(보조)', 'ms': 0, 'masked': 0}
+    if ctx.get('use_llm', True) and available():
+        try:
+            _fast.on = bool(ctx.get('fast'))
+            out, ms = fn_llm(mk.mask if mk else (lambda x: x))
+            if mk:
+                out = mk.unmask(out)
+            return out, {'mode': 'llm', 'model': CFG['llm_model'], 'label': ctx.get('label') or display(), 'ms': ms,
+                         'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
+        except Exception as e:
+            meta['error'] = str(e)[:200]
+        finally:
+            _fast.on = False
+    t0 = time.time()
+    out = fn_rule()
+    meta['ms'] = int((time.time() - t0) * 1000)
+    return out, meta
+
+
+def _plain(v):
+    """문서에 들어가지 않는 마크다운 강조(**·__·`)를 걷어 낸다."""
+    return re.sub(r'\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`', lambda m: next(g for g in m.groups() if g is not None), str(v if v is not None else '')).strip()
+
+
+def _clean_bp(bp, outline):
+    secs = []
+    for s in bp.get('sections') or []:
+        items = []
+        for it in s.get('items') or []:
+            if isinstance(it, str):
+                it = {'label': '', 'text': it}
+            items.append({'label': _plain(it.get('label'))[:12], 'text': _plain(it.get('text')),
+                          'children': [{'text': _plain(c.get('text') if isinstance(c, dict) else c)} for c in (it.get('children') or [])][:3]})
+        tb = s.get('table')
+        if tb and tb.get('cols') and tb.get('rows'):
+            tb = {'cols': [_plain(c) for c in tb['cols']], 'rows': [[_plain(c) for c in r] for r in tb['rows']][:12]}
+        else:
+            tb = None
+        secs.append({'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb})
+    return {'title': _plain(bp.get('title')) or '문서', 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+
+
+def _attach_text(files, M):
+    out = []
+    for f in files or []:
+        out.append(f'### 첨부: {M(f["name"])}')
+        for t in json.loads(f.get('tables') or '[]')[:3]:
+            out.append(M('표 ' + t.get('title', '') + '\n' + ' | '.join(t['cols']) + '\n' + '\n'.join(' | '.join(r) for r in t['rows'][:20])))
+        if f.get('text'):
+            out.append(M(f['text'][:20000]))
+    return '\n'.join(out) or '(첨부 없음)'
+
+
+# ───────────── 1. 문서 라우터 ─────────────
+KEYS = [('장애', 'issue-report'), ('경위', 'issue-report'), ('주간', 'weekly-report'), ('방문', 'visit-report'), ('미팅', 'visit-report'),
+        ('회의', 'meeting-report'), ('제안', 'deck-proposal'), ('계획', 'plan-report'), ('검토', 'review-report'), ('교육', 'education-plan'),
+        ('브리핑', 'web-brief'), ('임원', 'deck-exec'), ('결과', 'result-report'), ('실적', 'result-report')]
+
+
+def route(text, templates, ctx=None):
+    ids = {t['id'] for t in templates}
+
+    def rule():
+        for k, tid in KEYS:
+            if k in text:
+                special = [t for t in templates if t['scope'] != 'corp' and k in t['name']]
+                if special:
+                    return {'template_id': special[0]['id'], 'reason': f"'{k}'이(가) 들어 있어 우리 조직 템플릿을 골랐습니다"}
+                if tid in ids:
+                    return {'template_id': tid, 'reason': f"'{k}'이(가) 들어 있어 골랐습니다"}
+        return {'template_id': 'result-report' if 'result-report' in ids else templates[0]['id'], 'reason': '가장 많이 쓰는 보고 형식입니다'}
+
+    def llm(M):
+        cat = '\n'.join(f"- {t['id']}: {t['name']} ({t['fmt']}, {t['desc']}, 구성 {' → '.join(json.loads(t['outline']))})" for t in templates)
+        out, ms = call_json('너는 사내 문서 라우터다. 요청에 가장 맞는 템플릿 하나를 고른다. 부서·팀 전용 템플릿이 맞으면 우선한다.',
+                            f'요청: {M(text)}\n\n템플릿 목록:\n{cat}\n\n출력 형식: {{"template_id": str, "reason": "한 문장(존댓말)"}}', 300, fast=True)
+        if out.get('template_id') not in ids:
+            raise RuntimeError('목록에 없는 템플릿')
+        return out, ms
+    return _try(ctx, llm, rule)
+
+
+# ───────────── 2. 설계도 작성 ─────────────
+def blueprint(template, request_text, files, ctx=None):
+    outline = json.loads(template['outline'])
+    tables = [t for f in files or [] for t in json.loads(f.get('tables') or '[]')]
+    fixed = json.loads(template.get('fixed') or '[]')
+
+    def rule():
+        first = re.split(r'[.!?\n]', request_text.strip())[0]
+        title = re.sub(r'\s*(만들어\s*줘|작성해\s*줘|써\s*줘|해\s*줘|부탁해|부탁합니다|좀)\s*', ' ', first).strip(' .,') or template['name']
+        secs = []
+        for h in outline:
+            items = [{'label': '', 'text': f'{h} 관련 주요 사항 정리 (확인 필요)', 'children': []}]
+            fx = [f['text'] for f in fixed if f.get('heading') == h]
+            if fx:
+                items = [{'label': '', 'text': fx[0][:90], 'children': []}]
+            secs.append({'heading': h, 'items': items, 'table': None})
+        if tables:
+            tgt = next((s for k in ('실적', '성과', '현황', '결과', '내용') for s in secs if k in s['heading']), secs[min(1, len(secs) - 1)])
+            tgt['table'] = {'cols': tables[0]['cols'], 'rows': tables[0]['rows'][:10]}
+        from engines import short_title
+        return {'title': short_title(title), 'sections': secs}
+
+    def llm(M):
+        fx = '\n'.join(f"- [{f.get('heading')}] {f['text']}" for f in fixed) or '(없음)'
+        rules = template.get('rules') or ''
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{WRITING_RULES}\n{rules}'
+        user = (f"템플릿: {template['name']} ({template['desc']})\n구성(이 순서와 제목을 그대로): {outline}\n"
+                f"고정 문구(그대로 넣는다):\n{fx}\n\n요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
+                f"첨부에 표가 있으면 가장 맞는 장의 table에 그대로 넣는다(숫자 변경 금지, 필요하면 증감 열만 추가).\n출력 형식: {BP_SCHEMA}")
+        out, ms = call_json(sys, user, 3000)
+        return _clean_bp(out, outline), ms
+    return _try(ctx, llm, rule)
+
+
+# ───────────── 3. 채팅으로 고치기 ─────────────
+def edit(bp, instruction, files, ctx=None):
+    def rule():
+        b = json.loads(json.dumps(bp))
+        secs = b['sections']
+        if re.search('결론|요약', instruction):
+            if not any(s['heading'] == '핵심 요약' for s in secs):
+                secs.insert(0, {'heading': '핵심 요약', 'items': [{'label': '', 'text': '(핵심 결론 한 줄 — 확인 필요)', 'children': []}], 'table': None})
+            return {'reply': '결론을 맨 앞에 두도록 **핵심 요약** 장을 첫 번째로 넣었습니다.', 'blueprint': b}
+        if re.search('한 장|1쪽|한장|짧게', instruction):
+            for s in secs:
+                s['items'] = s['items'][:2]
+            return {'reply': '한 쪽에 맞도록 장마다 2개 항목으로 줄였습니다.', 'blueprint': b}
+        if re.search('빼|삭제', instruction):
+            for s in list(secs):
+                if s['heading'] in instruction:
+                    secs.remove(s)
+                    return {'reply': f"**{s['heading']}** 장을 뺐습니다.", 'blueprint': b}
+        if files:
+            tbs = [t for f in files for t in json.loads(f.get('tables') or '[]')]
+            if tbs:
+                tgt = next((s for s in secs if s['heading'] in instruction), next((s for s in secs if re.search('실적|성과|현황', s['heading'])), secs[-1]))
+                tgt['table'] = {'cols': tbs[0]['cols'], 'rows': tbs[0]['rows'][:10]}
+                return {'reply': f"첨부 표를 **{tgt['heading']}** 장에 넣었습니다.", 'blueprint': b}
+        tgt = next((s for s in secs if s['heading'] in instruction), secs[-1])
+        tgt['items'].append({'label': '', 'text': instruction.strip()[:80] + ' (반영 예정)', 'children': []})
+        return {'reply': f"**{tgt['heading']}**에 지시를 메모로 넣었습니다. (규칙 기반 보조 모드 — AI가 연결되면 문장으로 반영합니다)", 'blueprint': b}
+
+    def llm(M):
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{WRITING_RULES}'
+        user = (f'현재 설계도:\n{M(json.dumps(bp, ensure_ascii=False))}\n\n지시: {M(instruction)}\n\n{_attach_text(files, M)}\n\n'
+                f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA}}}')
+        out, ms = call_json(sys, user, 3500)
+        return {'reply': str(out.get('reply') or '반영했습니다.'), 'blueprint': _clean_bp(out.get('blueprint') or bp, [])}, ms
+    return _try(ctx, llm, rule)
+
+
+# ───────────── 4. 긴 항목 줄이기(검수 자동 수정) ─────────────
+def shorten(texts, ctx=None):
+    def rule():
+        out = []
+        for t in texts:
+            s = re.split(r'(?:으며|이며|하며|였으며|고,|,)\s', t)[0]
+            out.append(s if len(s) <= 90 else s[:88] + '…')
+        return out
+
+    def llm(M):
+        out, ms = call_json(f'긴 보고서 항목을 90자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{WRITING_RULES}',
+                            f'항목들: {M(json.dumps(texts, ensure_ascii=False))}\n출력 형식: {{"items": [str]}} (같은 개수, 같은 순서)', 1500, fast=True)
+        items = out.get('items') or []
+        if len(items) != len(texts):
+            raise RuntimeError('개수 불일치')
+        return [str(x) for x in items], ms
+    return _try(ctx, llm, rule)
+
+
+# ───────────── 5. 기존 문서에서 템플릿 추출 ─────────────
+def extract(docs, ctx=None):
+    """docs = [{'name','text','heads'}] → 구성·고정 문구·채울 칸·작성 규칙."""
+    def rule():
+        hints = [d.get('heads') or [] for d in docs]
+        base = hints[0] if hints else []
+        common = [h for h in base if all(h in hh for hh in hints[1:])] or base
+        texts = [d['text'] for d in docs]
+        fixed = []
+        if len(texts) > 1:
+            lines0 = [l.strip() for l in texts[0].split('\n') if len(l.strip()) > 25]
+            fixed = [{'heading': '', 'text': l} for l in lines0 if all(l in t for t in texts[1:])][:3]
+        return {'outline': common[:8] or ['개요', '주요 내용', '향후 계획'], 'fixed': fixed,
+                'fields': [{'name': h, 'desc': f'{h}에 들어갈 내용', 'example': '', 'kind': '칸'} for h in common[:6]],
+                'rules': ['결론을 먼저 쓴다'], 'name_suggest': docs[0]['name'].rsplit('.', 1)[0][:30] if docs else '새 템플릿'}
+
+    def llm(M):
+        body = '\n\n'.join(f"=== 문서 {i + 1}: {M(d['name'])} ===\n장 제목 후보: {d.get('heads')}\n{M(d['text'][:5000])}" for i, d in enumerate(docs))
+        sys = ('너는 사내 문서 양식 분석가다. 같은 종류의 문서 여러 건에서 공통 구성(목차), 매번 똑같이 들어가는 고정 문구, '
+               '문서마다 바뀌는 채울 칸, 작성 규칙을 뽑아 템플릿 초안을 만든다. 개인 이름·연락처·고객사 실명은 예시에서 가린다.')
+        user = (f'{body}\n\n출력 형식: {{"name_suggest": str, "outline": [str], "fixed": [{{"heading": str, "text": str}}], '
+                f'"fields": [{{"name": str, "desc": str, "example": str, "kind": "칸"|"표"}}], "rules": [str]}}')
+        out, ms = call_json(sys, user, 2500)
+        for k in ('outline', 'fixed', 'fields', 'rules'):
+            out.setdefault(k, [])
+        return out, ms
+    return _try(ctx, llm, rule)

@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>코쇠오피스</title>
+<link rel="icon" href="/static/kosoe.webp">
+<style>
+@font-face{font-family:KoPub;font-weight:700;src:url(/static/KoPubDotum-Bold.woff2) format('woff2')}
+@font-face{font-family:KoPub;font-weight:500;src:url(/static/KoPubDotum-Medium.woff2) format('woff2')}
+:root{--o:#ee6d1d;--o2:#f26522;--op:#fdeee4;--n:#00338d;--n2:#1f4b9b;--nt:#edf4fb;--ink:#2b2b2e;--ink2:#6e6e73;--g:#ececee;--g2:#f5f5f7;--line:#dcdce0;
+ --ok:#1f7a4d;--okt:#e7f4ec;--warn:#b85415;--bad:#c0392b;--badt:#fbeceb;--r:12px;--sh:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,30,80,.06)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--g2);color:var(--ink);font:500 14px/1.55 KoPub,'Malgun Gothic',sans-serif;word-break:keep-all;overflow-wrap:break-word}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;background:none}
+a{color:var(--n);text-decoration:none}a:hover{text-decoration:underline}
+b,strong,h1,h2,h3,h4{font-weight:700}
+h1,h2,h3,h4{margin:0}
+.hide{display:none!important}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border-radius:9px;background:var(--n);color:#fff;font-weight:700;transition:.15s;white-space:nowrap}
+.btn:hover{background:var(--n2);transform:translateY(-1px)}
+.btn.o{background:var(--o)}.btn.o:hover{background:var(--o2)}
+.btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}.btn.ghost:hover{border-color:var(--n);color:var(--n)}
+.btn.sm{padding:5px 11px;font-size:12.5px;border-radius:7px}
+.btn.red{background:#fff;color:var(--bad);border:1px solid #e9b8b3}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.in{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;outline:none;transition:.15s}
+.in:focus{border-color:var(--n);box-shadow:0 0 0 3px rgba(0,51,141,.1)}
+textarea.in{resize:vertical;min-height:40px}
+.card{background:#fff;border:1px solid var(--g);border-radius:var(--r);box-shadow:var(--sh)}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:99px;font-size:12px;background:var(--g2);color:var(--ink2);border:1px solid var(--g);white-space:nowrap}
+.chip.n{background:var(--nt);color:var(--n);border-color:#d3e2f3}.chip.o{background:var(--op);color:var(--warn);border-color:#f7d3bc}
+.chip.ok{background:var(--okt);color:var(--ok);border-color:#c7e6d3}.chip.bad{background:var(--badt);color:var(--bad);border-color:#f0c9c5}
+.chip.dark{background:var(--ink);color:#fff;border-color:var(--ink)}
+.muted{color:var(--ink2)}.small{font-size:12.5px}
+.row{display:flex;align-items:center;gap:8px}.col{display:flex;flex-direction:column;gap:8px}.grow{flex:1;min-width:0}
+.sp{justify-content:space-between}.wrap{flex-wrap:wrap}
+.chev{display:inline-block;width:.62em;height:.8em;background:var(--o);clip-path:polygon(0 0,58% 0,100% 50%,58% 100%,0 100%,42% 50%)}
+/* 로그인 */
+#login{min-height:100%;display:grid;grid-template-columns:1.05fr 1fr;background:#fff}
+#login .l{background:var(--n);color:#fff;padding:64px 56px;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:center}
+#login .l .bg{position:absolute;right:-60px;top:90px;display:flex;gap:0}
+#login .l .bg i{width:180px;height:340px;clip-path:polygon(0 0,58% 0,100% 50%,58% 100%,0 100%,42% 50%);margin-left:-60px;animation:slide 6s ease-in-out infinite}
+#login .l .bg i:nth-child(1){background:#1f4b9b}#login .l .bg i:nth-child(2){background:var(--o);animation-delay:.3s}#login .l .bg i:nth-child(3){background:#f6a26c;animation-delay:.6s}
+@keyframes slide{50%{transform:translateX(14px)}}
+#login .l img{width:120px;position:relative;animation:bob 3s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(-8px) rotate(-3deg)}}
+#login h1{font-size:44px;line-height:1.15;margin:22px 0 12px;position:relative}
+#login .l p{opacity:.85;max-width:430px;position:relative;font-size:15px}
+#login .r{padding:56px;display:flex;flex-direction:column;justify-content:center;gap:14px}
+.persona{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--g);border-radius:12px;text-align:left;transition:.15s;background:#fff}
+.persona:hover{border-color:var(--o);box-shadow:var(--sh);transform:translateX(4px)}
+.av{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:700;flex:none}
+.status{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+/* 앱 */
+#app{display:grid;grid-template-rows:58px 1fr;grid-template-columns:220px 1fr;height:100%}
+#top{grid-column:1/3;display:flex;align-items:center;gap:14px;padding:0 18px;background:#fff;border-bottom:1px solid var(--g);z-index:5}
+#top .logo{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;width:190px}
+#top .logo img{width:30px}
+.net{display:flex;background:var(--g2);border:1px solid var(--g);border-radius:10px;padding:3px}
+.net button{padding:5px 13px;border-radius:7px;font-weight:700;color:var(--ink2);font-size:13px}
+.net button.on{background:var(--n);color:#fff}.net button.on.i{background:var(--o)}
+#side{background:#fff;border-right:1px solid var(--g);padding:14px 10px;display:flex;flex-direction:column;gap:2px;overflow:auto}
+#side a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:9px;color:var(--ink);font-weight:700;text-decoration:none}
+#side a:hover{background:var(--g2)}#side a.on{background:var(--nt);color:var(--n)}
+#side a .ic{width:20px;text-align:center}
+#side a .badge{margin-left:auto;background:var(--o);color:#fff;border-radius:99px;font-size:11px;padding:0 7px}
+#side .sec{font-size:11px;color:var(--ink2);padding:14px 12px 4px;letter-spacing:.04em}
+#main{overflow:auto;padding:26px 30px 60px}
+.page-h{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:18px}
+.page-h h2{font-size:23px}.page-h p{margin:4px 0 0;color:var(--ink2)}
+/* 새 문서 */
+.ask{padding:22px;border-radius:16px;background:linear-gradient(135deg,#fff 60%,var(--op));border:1px solid var(--g);box-shadow:var(--sh)}
+.ask textarea{border:0;outline:0;width:100%;font-size:18px;resize:none;background:transparent;min-height:64px}
+.files{display:flex;gap:6px;flex-wrap:wrap}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+.tpl{padding:15px;cursor:pointer;transition:.15s;display:flex;flex-direction:column;gap:8px;position:relative}
+.tpl:hover{border-color:var(--n2);transform:translateY(-2px)}
+.tpl.sel{border:2px solid var(--o);padding:14px;background:#fffaf6}
+.tpl.dis{opacity:.5;cursor:not-allowed}
+.tpl .ol{font-size:12px;color:var(--ink2)}
+.fmt{font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;color:#fff}
+.fmt.hwp{background:#2f74c0}.fmt.ppt{background:#d24726}.fmt.web{background:#1f7a4d}
+.rec{display:flex;gap:14px;align-items:center;padding:14px 16px;background:var(--nt);border:1px solid #d3e2f3;border-radius:12px;margin-top:14px}
+/* 작업 화면 */
+.ws{display:grid;grid-template-columns:330px 1fr 300px;gap:14px;height:calc(100vh - 58px - 150px)}
+.panel{display:flex;flex-direction:column;min-height:0}
+.panel>.hd{padding:12px 14px;border-bottom:1px solid var(--g);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.panel>.bd{padding:14px;overflow:auto;flex:1;min-height:0}
+.msg{max-width:92%;padding:9px 12px;border-radius:12px;margin-bottom:10px;white-space:pre-wrap}
+.msg.me{background:var(--n);color:#fff;margin-left:auto;border-bottom-right-radius:3px}
+.msg.ai{background:var(--g2);border-bottom-left-radius:3px}
+.msg .meta{display:block;margin-top:5px;font-size:11px;color:var(--ink2)}
+.quick{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px 0}
+.quick button{font-size:12px;padding:4px 9px;border:1px solid var(--line);border-radius:99px;background:#fff}
+.quick button:hover{border-color:var(--o);color:var(--o)}
+.sec-ed{border:1px solid var(--g);border-radius:10px;padding:12px;margin-bottom:12px;background:#fff;transition:.2s}
+.sec-ed:hover{border-color:#cdd8ea}
+.sec-ed .h{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.sec-ed .h .no{color:var(--o);font-weight:700;width:24px}
+.sec-ed .h input{font-weight:700;font-size:15px;border:0;border-bottom:1px dashed transparent;padding:3px 2px;outline:0;flex:1}
+.sec-ed .h input:focus{border-bottom-color:var(--n)}
+.item{display:grid;grid-template-columns:96px 1fr 26px;gap:6px;margin-bottom:6px;align-items:start}
+.item.child{grid-template-columns:20px 1fr 26px;margin-left:96px}
+.item input,.item textarea{padding:6px 8px;border:1px solid var(--g);border-radius:7px;outline:0;background:var(--g2)}
+.item input:focus,.item textarea:focus{border-color:var(--n);background:#fff}
+.item textarea{resize:none;min-height:34px;overflow:hidden;width:100%;display:block;line-height:1.45}
+.item .cnt{font-size:10.5px;color:var(--ink2);text-align:right;margin-top:-2px}
+.item .cnt.over{color:var(--bad);font-weight:700}
+.x{color:#aaa;font-size:16px;line-height:1;padding:6px 4px}.x:hover{color:var(--bad)}
+.tbl-ed{overflow:auto;margin:6px 0}
+.tbl-ed table{border-collapse:collapse;font-size:12.5px;width:100%}
+.tbl-ed td,.tbl-ed th{border:1px solid var(--line);padding:5px 7px;min-width:60px;outline:0}
+.tbl-ed th{background:var(--n);color:#fff}
+.tbl-ed td:focus,.tbl-ed th:focus{box-shadow:inset 0 0 0 2px var(--o)}
+.check{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px dashed var(--g);font-size:13px}
+.check .i{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:11px;color:#fff;flex:none;margin-top:2px}
+.check .i.ok{background:var(--ok)}.check .i.no{background:var(--o)}
+.out-f{border:1px solid var(--g);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.fmtpick{display:flex;gap:6px}
+.fmtpick label{flex:1;border:1px solid var(--line);border-radius:9px;padding:8px 6px;text-align:center;cursor:pointer;font-weight:700;font-size:13px;user-select:none}
+.fmtpick input{display:none}.fmtpick input:checked+span{color:var(--n)}
+.fmtpick label:has(input:checked){border-color:var(--n);background:var(--nt)}
+/* 표 · 목록 */
+table.list{width:100%;border-collapse:collapse;background:#fff}
+table.list th{text-align:left;font-size:12px;color:var(--ink2);padding:10px 12px;border-bottom:1px solid var(--g);font-weight:700;background:var(--g2)}
+table.list td{padding:11px 12px;border-bottom:1px solid var(--g);vertical-align:middle}
+table.list tr.click:hover td{background:#fafbfd;cursor:pointer}
+.perm{font-size:11px;font-weight:700;padding:2px 8px;border-radius:5px}
+.perm.m{background:var(--n);color:#fff}.perm.w{background:var(--o);color:#fff}.perm.r{background:var(--g);color:var(--ink)}.perm.audit{background:#e8e0f5;color:#5a3d8a}
+.grade{font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;border:1px solid}
+.grade.c{color:var(--bad);border-color:#e9b8b3;background:var(--badt)}.grade.i{color:var(--n);border-color:#c5d5ee;background:var(--nt)}.grade.n{color:var(--ink2);border-color:var(--line)}
+.pipe{display:flex;align-items:center;gap:0;margin:8px 0}
+.pipe .st{padding:5px 14px 5px 18px;font-size:12px;font-weight:700;background:var(--g);color:var(--ink2);clip-path:polygon(0 0,calc(100% - 9px) 0,100% 50%,calc(100% - 9px) 100%,0 100%,9px 50%);margin-right:-4px}
+.pipe .st:first-child{clip-path:polygon(0 0,calc(100% - 9px) 0,100% 50%,calc(100% - 9px) 100%,0 100%);padding-left:12px}
+.pipe .st.done{background:var(--ok);color:#fff}.pipe .st.now{background:var(--o);color:#fff}.pipe .st.rej{background:var(--bad);color:#fff}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.kpi{padding:16px 18px}.kpi .v{font-size:28px;font-weight:700;color:var(--n);line-height:1.2}.kpi .v small{font-size:14px;color:var(--ink2)}
+.kpi .l{color:var(--ink2);font-size:12.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.box{padding:16px 18px}.box h3{font-size:15px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+pre.code{background:#0f1b33;color:#d6e2ff;padding:14px;border-radius:10px;font:12.5px/1.6 Consolas,monospace;overflow:auto;white-space:pre-wrap;margin:0}
+.ev{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--g);font-size:13px}.ev .t{color:var(--ink2);width:82px;flex:none}.ev .w{font-weight:700;width:64px;flex:none}
+/* 모달 · 알림 */
+#modal{position:fixed;inset:0;background:rgba(10,20,40,.45);display:grid;place-items:center;z-index:50;padding:20px}
+#modal .mbox{background:#fff;border-radius:16px;width:min(760px,100%);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(0,0,0,.3)}
+#modal .mbox.wide{width:min(1180px,100%)}
+#modal .mh{padding:16px 20px;border-bottom:1px solid var(--g);display:flex;justify-content:space-between;align-items:center}
+#modal .mb{padding:18px 20px;overflow:auto}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:60;align-items:center}
+#toast div{background:var(--ink);color:#fff;padding:10px 18px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);animation:up .25s ease}
+#toast div.err{background:var(--bad)}
+@keyframes up{from{transform:translateY(10px);opacity:0}}
+.busy{position:fixed;inset:0;background:rgba(255,255,255,.6);display:grid;place-items:center;z-index:70;backdrop-filter:blur(2px)}
+.busy .b{background:#fff;padding:22px 30px;border-radius:14px;box-shadow:var(--sh);display:flex;align-items:center;gap:14px;font-weight:700}
+.busy img{width:46px;animation:bob 1s ease-in-out infinite}
+.hwpv{background:#f0f0f0;padding:20px;border-radius:10px}
+.hwpv .pg{background:#fff;max-width:640px;margin:auto;padding:46px 54px;box-shadow:0 4px 18px rgba(0,0,0,.12);font-family:'Malgun Gothic',serif;font-size:13px}
+.hwpv .t{font-size:20px;font-weight:700;text-align:center;border:2px solid #333;padding:10px;margin-bottom:6px}
+.hwpv .s{font-weight:700;font-size:15px;margin:14px 0 6px}
+.hwpv .p{margin:3px 0 3px 10px}
+.shots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.shots img{width:100%;border-radius:6px;border:1px solid var(--g)}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:26px;text-align:center;color:var(--ink2);transition:.15s;cursor:pointer}
+.drop:hover,.drop.on{border-color:var(--o);background:#fffaf6;color:var(--o)}
+.lst-ed .li{display:flex;gap:6px;margin-bottom:6px}
+.empty{padding:40px;text-align:center;color:var(--ink2)}
+.empty img{width:70px;opacity:.85}
+@media (max-width:1100px){.ws{grid-template-columns:1fr;height:auto}.kpis{grid-template-columns:repeat(2,1fr)}.grid2,.grid3{grid-template-columns:1fr}#login{grid-template-columns:1fr}}
+
+.chain{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center}.chain i{color:var(--ink2);font-style:normal}
+.chain .cn{padding:2px 7px;border-radius:5px;background:#f1f1f3;font-size:12px}.chain .cn.corp{background:#e8eef9;color:var(--n)}.chain .cn.me{background:var(--op);color:var(--o);font-weight:700}
+.inh{display:flex;flex-direction:column;gap:4px}.inh .lv{padding:6px 10px;border-left:4px solid #c9c9cf;background:#fafafa;font-size:13px}
+.inh .lv.corp{border-color:var(--n);background:#f2f5fb}.inh .lv.me{border-color:var(--o);background:var(--op)}.inh .lv b{margin-right:6px}
+.hl-legend{display:flex;gap:8px;margin:8px 0}.hl-doc{margin-top:6px}.hl-doc summary{cursor:pointer;font-size:13px}.hl-body{max-height:240px;overflow:auto;padding:6px;border:1px solid var(--g);border-radius:8px;margin-top:4px}
+.hl{font-size:12.5px;padding:1px 4px;border-radius:3px;margin:1px 0}.hl.fixed{background:#fde3d2}.hl.head{color:var(--n);font-weight:700}.hl.var{text-decoration:underline dotted var(--o)}
+.hl-legend .hl{display:inline-block}
+</style>
+</head>
+<body>
+<div id="login" class="hide"></div>
+<div id="app" class="hide">
+  <header id="top"></header>
+  <nav id="side"></nav>
+  <main id="main"></main>
+</div>
+<div id="modal" class="hide"><div class="mbox"><div class="mh"><h3 id="mt"></h3><button class="x" onclick="closeModal()">✕</button></div><div class="mb" id="mb"></div></div></div>
+<div id="toast"></div>
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/views_skills.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const md = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const FMT = {hwp:'한글', ppt:'PPT', web:'웹'}, GRADE = {c:'대외비', i:'사내한정', n:'일반'}, SCOPE = {corp:'전사', dept:'부서', team:'팀', me:'나만'};
+const PERM = {m:'관리', w:'쓰기', r:'읽기', audit:'감사'};
+let ME = null, VIEW = 'new', CMP = null, charts = [];
+
+async function api(path, opt = {}) {
+  const o = {method: opt.method || (opt.body ? 'POST' : 'GET'), headers: {}};
+  if (opt.body instanceof FormData) o.body = opt.body;
+  else if (opt.body !== undefined) { o.body = JSON.stringify(opt.body); o.headers['content-type'] = 'application/json'; }
+  const r = await fetch(path, o);
+  let d = {};
+  try { d = await r.json(); } catch (e) { d = {ok: false, error: `서버 응답 오류 (${r.status})`}; }
+  if (r.status === 401 && path !== '/api/me') { showLogin(); throw new Error(d.error); }
+  if (!d.ok && !opt.quiet) toast(d.error || '오류', true);
+  if (!d.ok) throw new Error(d.error);
+  return d;
+}
+function toast(t, bad) { const e = document.createElement('div'); e.textContent = t; if (bad) e.className = 'err'; $('#toast').appendChild(e); setTimeout(() => e.remove(), bad ? 5200 : 3000); }
+function modal(title, html, wide) { $('#mt').innerHTML = title; $('#mb').innerHTML = html; $('#modal .mbox').classList.toggle('wide', !!wide); $('#modal').classList.remove('hide'); }
+function closeModal() { $('#modal').classList.add('hide'); $('#mb').innerHTML = ''; }
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+async function busy(text, fn) {
+  const b = document.createElement('div'); b.className = 'busy';
+  const ai = /AI|초안|추천|추출|양식|고치는|템플릿을 찾/.test(text) && ME?.ai?.connected;
+  b.innerHTML = `<div class="b"><img src="/static/kosoe.webp" alt=""><span>${esc(text)}<br><span class="small muted" style="font-weight:500"><span id="bsec">0</span>초${ai ? ' · AI가 쓰는 중 — 보통 15~45초' : ''}</span></span></div>`;
+  document.body.appendChild(b);
+  const t0 = Date.now(), iv = setInterval(() => { const e = b.querySelector('#bsec'); if (e) e.textContent = Math.round((Date.now() - t0) / 1000); }, 500);
+  try { return await fn(); } finally { clearInterval(iv); b.remove(); }
+}
+const fmtTag = f => `<span class="fmt ${f}">${FMT[f]}</span>`;
+const gradeTag = g => `<span class="grade ${g}">${GRADE[g]}</span>`;
+const aiMeta = m => !m ? '' : `${m.mode === 'llm' ? '🤖 ' + esc(m.label) : '⚙️ 규칙 기반(보조)'} · ${(m.ms / 1000).toFixed(1)}초${m.masked ? ` · 🔒 마스킹 ${m.masked}건` : ''}${m.error ? ' · AI 오류로 대체: ' + esc(m.error.slice(0, 60)) : ''}`;
+function kb(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB'; }
+
+// ───────────── 로그인 ─────────────
+async function showLogin() {
+  $('#app').classList.add('hide'); $('#login').classList.remove('hide');
+  const [p, h] = await Promise.all([api('/api/personas'), api('/api/health', {quiet: true}).catch(() => ({}))]);
+  $('#login').innerHTML = `
+  <div class="l"><div class="bg"><i></i><i></i><i></i></div>
+    <img src="/static/kosoe.webp" alt="코쇠">
+    <h1>코쇠오피스</h1>
+    <p>회사 양식에 맞춰 <b>PPT · 웹슬라이드 · 한글</b>을 만들고, 수정과 검수까지. 대표 문서 몇 건이면 <b>전사 공용 스킬을 상속한 우리 부서 스킬</b>이 생깁니다.</p>
+    <div class="status" style="margin-top:22px;position:relative">
+      <span class="chip" style="background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.2)">${h.ai?.ok ? '🤖 AI 연결됨 · ' + esc(h.model) : '⚙️ AI 미연결(' + esc(h.ai?.error || '') + ') → 규칙 기반 보조 모드'}</span>
+      <span class="chip" style="background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.2)">${h.hwp ? '📄 한글 엔진 준비' : '⚠ 한글 엔진 없음'}</span>
+      <span class="chip" style="background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.2)">${h.repo?.mode === 'github' ? '🧩 스킬 저장소 ' + esc((h.repo.head || '').slice(0, 7)) : h.repo?.mode === 'local' ? '📁 로컬 스킬 저장소' : '… 스킬 저장소 준비 중'}</span>
+      <span class="chip" style="background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.2)">전사 공용 스킬 ${(h.corp || []).filter(c => c.cached).length}/${(h.corp || []).length}</span>
+    </div>
+  </div>
+  <div class="r">
+    <div><h2 style="font-size:22px">시연 사용자 선택</h2><p class="muted" style="margin:4px 0 6px">실제 서비스에서는 사내 SSO로 로그인합니다. 시연용 가상 조직입니다.</p></div>
+    ${p.users.map(u => `<button class="persona" onclick="login('${u.id}')">
+      <span class="av" style="background:${u.color}">${esc(u.name[0])}</span>
+      <span class="grow"><b>${esc(u.name)} ${esc(u.title)}</b><br><span class="muted small">${esc(u.dept)} · ${esc(u.team)}</span></span>
+      <span class="chip ${u.role === 'user' ? '' : 'o'}">${esc(u.role_name)}</span></button>`).join('')}
+  </div>`;
+}
+async function login(uid) { await api('/api/login', {body: {uid}}); boot(); }
+async function logout() { await api('/api/logout', {body: {}}); ME = null; showLogin(); }
+
+// ───────────── 셸 ─────────────
+async function boot() {
+  try { ME = await api('/api/me', {quiet: true}); } catch (e) { return showLogin(); }
+  $('#login').classList.add('hide'); $('#app').classList.remove('hide');
+  renderTop(); renderSide(); go(VIEW);
+}
+async function refreshMe() { ME = await api('/api/me'); renderTop(); renderSide(); }
+function renderTop() {
+  const u = ME.user, inet = ME.inet;
+  $('#top').innerHTML = `
+   <div class="logo"><img src="/static/kosoe.webp" alt=""><span>코쇠오피스</span></div>
+   <div class="net" title="인터넷망은 팀장 승인 기간에만">
+     <button class="${ME.net === 'closed' ? 'on' : ''}" onclick="setNet('closed')">🔒 폐쇄망</button>
+     <button class="${ME.net === 'internet' ? 'on i' : ''}" onclick="setNet('internet')">🌐 인터넷망${inet ? '' : ' 🔑'}</button>
+   </div>
+   <span class="small muted">${inet ? `인터넷 승인 ~${inet.until}` : '인터넷망: 승인 필요'}</span>
+   <span class="grow"></span>
+   <span class="chip ${ME.ai.connected ? 'n' : 'o'}" title="${esc(ME.ai.detail || 'AI 상태')}">${ME.ai.connected ? (ME.net === 'internet' ? '🤖 ' + esc(ME.ai.model) + ' · 마스킹' : '🤖 사내 LLM 자리 (시연: ' + esc(ME.ai.model) + ')') : '⚙️ 규칙 기반 보조 모드 — ' + esc(ME.ai.detail || '')}</span>
+   <span class="chip" title="스킬 저장소 ${esc(ME.repo.url || '')} ${esc(ME.repo.error || '')}" onclick="go('skills')" style="cursor:pointer">${ME.repo.mode === 'github' ? '🧩 스킬 저장소 ' + esc(ME.repo.head) : ME.repo.mode === 'local' ? '📁 로컬 스킬 저장소' : '… 스킬 저장소'}</span>
+   <button class="row" onclick="logout()" title="사용자 바꾸기"><span class="av" style="width:32px;height:32px;background:${u.color};font-size:13px">${esc(u.name[0])}</span>
+     <span style="text-align:left;line-height:1.25"><b>${esc(u.name)} ${esc(u.title)}</b><br><span class="small muted">${esc(u.team)} · ${esc(u.role_name)}</span></span></button>`;
+}
+const NAV = [
+  ['new', '✍️', '새 문서'], ['docs', '🗂️', '문서함'], ['templates', '📐', '양식'], ['skills', '🧩', '스킬'], ['register', '★', '스킬 만들기'],
+  ['inspect', '🔍', '검수'], ['approve', '✅', '승인함'], ['inet', '🌐', '인터넷 사용'], ['dash', '📊', '대시보드'], ['audit', '🛡️', '감사 로그'],
+];
+function renderSide() {
+  const r = ME.user.role;
+  const show = k => k === 'audit' ? ['security', 'corpAdmin'].includes(r) : k === 'dash' ? r !== 'user' : true;
+  $('#side').innerHTML = NAV.filter(n => show(n[0])).map(([k, ic, t]) =>
+    `<a href="#" class="${VIEW === k || (VIEW === 'ws' && k === 'new') ? 'on' : ''}" onclick="go('${k}');return false"><span class="ic">${ic}</span>${t}${k === 'approve' && ME.pending ? `<span class="badge">${ME.pending}</span>` : ''}</a>`).join('')
+    + `<div class="grow"></div><div class="sec">이 PC에서만 · localhost</div><div class="small muted" style="padding:0 12px">가상 조직 · 가상 데이터</div>`;
+}
+async function setNet(n) {
+  if (n === ME.net) return;
+  try { await api('/api/net', {body: {net: n}}); } catch (e) { if (n === 'internet') go('inet'); return; }
+  toast(n === 'internet' ? '인터넷망으로 전환 — 외부 AI 사용 시 민감 정보는 마스킹됩니다' : '폐쇄망으로 전환했습니다');
+  await refreshMe(); go(VIEW === 'ws' ? 'ws' : VIEW);
+}
+function go(v) {
+  charts.forEach(c => c.destroy()); charts = [];
+  VIEW = v; renderSide();
+  ({new: vNew, ws: vWs, docs: vDocs, templates: vTemplates, skills: () => vSkills(), register: vRegister, inspect: vInspect, approve: vApprove, inet: vInet, repo: () => vSkills(), dash: vDash, audit: vAudit}[v] || vNew)();
+}
+
+// ───────────── 새 문서 ─────────────
+let PICK = null, ATT = [], TPLS = [];
+async function vNew() {
+  const d = await api('/api/templates'); TPLS = d.templates;
+  const mine = TPLS.filter(t => t.scope !== 'corp'), corp = TPLS.filter(t => t.scope === 'corp');
+  $('#main').innerHTML = `
+  <div class="page-h"><div><h2>무엇을 만들까요?</h2><p>하고 싶은 말을 적고 자료를 붙이면, 맞는 양식(스킬)을 골라 초안을 만듭니다.</p></div>
+    <span class="chip ${ME.net === 'internet' ? 'o' : 'n'}">${ME.net === 'internet' ? '🌐 인터넷망 — 대외비 템플릿 제외 · 마스킹 적용' : '🔒 폐쇄망 — 모든 등급 사용 가능'}</span></div>
+  <div class="ask">
+    <textarea id="req" placeholder="예) 3분기 금융영업1팀 실적 결과 보고서 만들어줘. 첨부한 엑셀 숫자를 성과 표에 넣고, 향후 계획은 B증권 제안 중심으로."></textarea>
+    <div class="row sp wrap" style="margin-top:8px">
+      <div class="row wrap"><button class="btn ghost sm" onclick="pickFile(f => addAtt(f))">📎 자료 첨부</button><div class="files" id="att"></div></div>
+      <div class="row"><button class="btn ghost" onclick="recommend()">🧭 양식 추천</button><button class="btn o" id="go" onclick="startCompose()" disabled>초안 만들기 →</button></div>
+    </div>
+  </div>
+  <div id="rec"></div>
+  <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>우리 팀·부서·나의 스킬 양식 <span class="chip">${mine.length}</span></h3>
+  <div class="tgrid">${mine.map(tplCard).join('') || '<div class="muted small">아직 없습니다. [★ 스킬 만들기]에서 대표 문서로 만들어 보세요.</div>'}</div>
+  <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>전사 공통 양식 <span class="chip">${corp.length}</span></h3>
+  <div class="tgrid">${corp.map(tplCard).join('')}</div>`;
+  renderAtt(); if (PICK) selTpl(PICK);
+}
+function tplCard(t) {
+  return `<div class="card tpl ${t.usable ? '' : 'dis'}" id="t-${t.id}" onclick="${t.usable ? `selTpl('${t.id}')` : `toast('${esc(t.blocked || '사용 권한이 없습니다')}',true)`}" title="${esc(t.blocked)}">
+    <div class="row sp"><div class="row">${fmtTag(t.fmt)}<span class="chip ${t.scope === 'corp' ? '' : 'o'}">${SCOPE[t.scope]}${t.team ? ' · ' + esc(t.team) : t.dept ? ' · ' + esc(t.dept) : ''}</span></div>${gradeTag(t.grade)}</div>
+    <b style="font-size:15px">${esc(t.name)}</b>
+    <div class="small muted">${esc(t.desc)}</div>
+    <div class="ol">${t.outline.map(esc).join(' › ')}</div>
+    <div class="row sp small muted"><span>🧩 ${esc(t.skill)}</span><span>사용 ${t.uses}회</span></div>
+    ${t.blocked ? `<div class="small" style="color:var(--bad)">⛔ ${esc(t.blocked)}</div>` : ''}</div>`;
+}
+function selTpl(id) {
+  PICK = id; document.querySelectorAll('.tpl').forEach(e => e.classList.toggle('sel', e.id === 't-' + id));
+  const g = $('#go'); if (g) { g.disabled = false; const t = TPLS.find(x => x.id === id); g.textContent = `${t ? t.name : ''} 초안 만들기 →`; }
+}
+function pickFile(cb, multi) {
+  const i = document.createElement('input'); i.type = 'file'; i.multiple = !!multi;
+  i.accept = '.xlsx,.xlsm,.pptx,.docx,.pdf,.hwp,.html,.csv,.txt,.md,.pia';
+  i.onchange = async () => { for (const f of i.files) await cb(f); }; i.click();
+}
+async function upload(f) {
+  const fd = new FormData(); fd.append('file', f);
+  const d = await busy(`${f.name} 읽는 중…`, () => api('/api/upload', {body: fd}));
+  const u = d.upload;
+  if (u.drm) toast(`🔐 ${u.name}: DRM(암호화) 문서 — 서버 복호화 연동 전까지 내용은 쓰지 않습니다`, true);
+  else toast(`${u.name}: 표 ${u.tables.length}개 · 장 제목 ${u.heads.length}개 읽음`);
+  return u;
+}
+async function addAtt(f) { ATT.push(await upload(f)); renderAtt(); }
+function renderAtt() {
+  const e = $('#att'); if (!e) return;
+  e.innerHTML = ATT.map((u, i) => `<span class="chip ${u.drm ? 'bad' : 'n'}">${u.drm ? '🔐' : '📄'} ${esc(u.name)}${u.tables.length ? ' · 표' + u.tables.length : ''}<button class="x" style="padding:0 0 0 4px;font-size:12px" onclick="ATT.splice(${i},1);renderAtt()">✕</button></span>`).join('');
+}
+async function recommend() {
+  const text = $('#req').value.trim(); if (!text) return toast('먼저 무엇을 만들지 적어 주세요', true);
+  const d = await busy('맞는 템플릿을 찾는 중…', () => api('/api/route', {body: {text}}));
+  const t = TPLS.find(x => x.id === d.suggest.template_id);
+  $('#rec').innerHTML = t ? `<div class="rec"><img src="/static/kosoe.webp" style="width:44px" alt="">
+    <div class="grow"><b>추천: ${esc(t.name)}</b> ${fmtTag(t.fmt)} <span class="chip">${SCOPE[t.scope]}</span><br><span class="small muted">${esc(d.suggest.reason)} · ${aiMeta(d.meta)}</span></div>
+    <button class="btn o" onclick="selTpl('${t.id}');startCompose()">이걸로 초안 만들기 →</button></div>` : '';
+  if (t) { selTpl(t.id); document.getElementById('t-' + t.id)?.scrollIntoView({block: 'nearest', behavior: 'smooth'}); }
+}
+async function startCompose() {
+  if (!PICK) return toast('템플릿을 골라 주세요', true);
+  const text = $('#req').value.trim();
+  const d = await busy('초안을 쓰는 중… (AI가 구성에 맞춰 설계도를 만듭니다)', () =>
+    api('/api/compose', {body: {template_id: PICK, request: text, upload_ids: ATT.filter(a => !a.drm).map(a => a.id)}}));
+  CMP = d.compose; ATT = []; go('ws');
+}
+
+// ───────────── 작업 화면 ─────────────
+let saveT = null, CATT = [], LASTDOC = null;
+function vWs() {
+  if (!CMP) return go('new');
+  const t = TPLS.find(x => x.id === CMP.template_id) || {name: CMP.template_id, fmt: CMP.fmt};
+  $('#main').innerHTML = `
+  <div class="page-h" style="margin-bottom:12px"><div><div class="row small muted"><a href="#" onclick="go('new');return false">새 문서</a> › ${esc(t.name)} ${fmtTag(t.fmt)}</div>
+    <h2 id="wsTitle">${esc(CMP.blueprint.title)}</h2></div>
+    <div class="row">${CMP.doc_id ? `<button class="btn ghost" onclick="openDoc('${CMP.doc_id}')">🗂️ 문서 정보 · 공유</button>` : ''}</div></div>
+  <div class="ws">
+    <div class="card panel"><div class="hd"><b>💬 채팅으로 지시</b><span class="small muted">첨부도 됩니다</span></div>
+      <div class="bd" id="chat"></div>
+      <div class="quick">${['결론을 맨 앞에 넣어줘', '한 장으로 줄여줘', '첨부 표를 성과에 넣어줘', '향후 계획을 일정 위주로 구체화해줘'].map(q => `<button onclick="sendChat('${q}')">${q}</button>`).join('')}</div>
+      <div style="padding:10px 14px 14px"><div class="files" id="catt" style="margin-bottom:6px"></div>
+        <div class="row"><button class="btn ghost sm" onclick="pickFile(async f=>{CATT.push(await upload(f));renderCatt()})" title="첨부">📎</button>
+        <input class="in" id="cin" placeholder="예) 성과에 전년 대비 증감을 추가해줘" onkeydown="if(event.key==='Enter'&&!event.isComposing)sendChat()">
+        <button class="btn" onclick="sendChat()">보내기</button></div></div></div>
+    <div class="card panel"><div class="hd"><b>📝 설계도 — 직접 고쳐도 됩니다</b><span class="small muted" id="saved">자동 저장</span></div>
+      <div class="bd" id="ed"></div></div>
+    <div class="card panel"><div class="hd"><b>📦 문서 만들기</b></div>
+      <div class="bd" id="outp"></div></div>
+  </div>`;
+  renderChat(); renderEd(); renderOut();
+}
+function renderChat() {
+  $('#chat').innerHTML = CMP.chat.map(m => `<div class="msg ${m.who}">${md(m.text)}${m.files?.length ? `<span class="meta">📎 ${m.files.map(esc).join(', ')}</span>` : ''}${m.meta ? `<span class="meta">${aiMeta(m.meta)}</span>` : ''}</div>`).join('');
+  $('#chat').scrollTop = 1e6;
+}
+function renderCatt() { $('#catt').innerHTML = CATT.map(u => `<span class="chip ${u.drm ? 'bad' : 'n'}">${u.drm ? '🔐' : '📄'} ${esc(u.name)}</span>`).join(''); }
+async function sendChat(q) {
+  const msg = q || $('#cin').value.trim(); if (!msg) return;
+  $('#cin').value = '';
+  CMP.chat.push({who: 'me', text: msg}); renderChat();
+  CMP.chat.push({who: 'ai', text: '… 고치는 중'}); renderChat();
+  const t0 = Date.now(), last = () => $('#chat .msg.ai:last-child');
+  const iv = setInterval(() => { const e = last(); if (e) e.textContent = `… 고치는 중 (${Math.round((Date.now() - t0) / 1000)}초)`; }, 1000);
+  try {
+    const d = await api(`/api/compose/${CMP.id}/chat`, {body: {message: msg, upload_ids: CATT.filter(a => !a.drm).map(a => a.id)}});
+    CMP = d.compose; CATT = []; renderCatt(); renderChat(); renderEd(); $('#wsTitle').textContent = CMP.blueprint.title;
+    document.querySelectorAll('.sec-ed').forEach(e => { e.style.borderColor = 'var(--o)'; setTimeout(() => e.style.borderColor = '', 900); });
+  } catch (e) { CMP.chat.pop(); CMP.chat.pop(); renderChat(); } finally { clearInterval(iv); }
+}
+function renderEd() {
+  const bp = CMP.blueprint;
+  $('#ed').innerHTML = `<input class="in" style="font-size:17px;font-weight:700;margin-bottom:12px" value="${esc(bp.title)}" oninput="CMP.blueprint.title=this.value;$('#wsTitle').textContent=this.value;dirty()">`
+    + bp.sections.map((s, i) => `<div class="sec-ed">
+      <div class="h"><span class="no">${String(i + 1).padStart(2, '0')}</span><input value="${esc(s.heading)}" oninput="CMP.blueprint.sections[${i}].heading=this.value;dirty()">
+        <button class="btn ghost sm" onclick="mvSec(${i},-1)" title="위로">↑</button><button class="btn ghost sm" onclick="mvSec(${i},1)" title="아래로">↓</button><button class="x" onclick="CMP.blueprint.sections.splice(${i},1);renderEd();dirty()" title="장 삭제">✕</button></div>
+      ${s.items.map((it, j) => itemRow(i, j, it) + (it.children || []).map((c, k) => `<div class="item child"><span class="muted">–</span><textarea rows="1" oninput="CMP.blueprint.sections[${i}].items[${j}].children[${k}].text=this.value;grow(this);dirty()">${esc(c.text)}</textarea><button class="x" onclick="CMP.blueprint.sections[${i}].items[${j}].children.splice(${k},1);renderEd();dirty()">✕</button></div>`).join('')).join('')}
+      ${s.table ? tblEd(i, s.table) : ''}
+      <div class="row" style="margin-top:4px"><button class="btn ghost sm" onclick="CMP.blueprint.sections[${i}].items.push({label:'',text:'',children:[]});renderEd()">+ 항목</button>
+        ${s.table ? '' : `<button class="btn ghost sm" onclick="CMP.blueprint.sections[${i}].table={cols:['구분','값'],rows:[['','']]};renderEd();dirty()">+ 표</button>`}</div></div>`).join('')
+    + `<button class="btn ghost" onclick="CMP.blueprint.sections.push({heading:'새 장',items:[{label:'',text:'',children:[]}],table:null});renderEd();dirty()">+ 장 추가</button>`;
+  document.querySelectorAll('#ed textarea').forEach(grow);
+}
+function itemRow(i, j, it) {
+  const n = it.text.length;
+  return `<div class="item"><input placeholder="라벨" value="${esc(it.label)}" oninput="CMP.blueprint.sections[${i}].items[${j}].label=this.value;dirty()">
+    <div><textarea rows="1" oninput="CMP.blueprint.sections[${i}].items[${j}].text=this.value;grow(this);cnt(this);dirty()">${esc(it.text)}</textarea><div class="cnt ${n > 90 ? 'over' : ''}">${n}/90</div></div>
+    <button class="x" onclick="CMP.blueprint.sections[${i}].items.splice(${j},1);renderEd();dirty()">✕</button></div>`;
+}
+function cnt(t) { const c = t.nextElementSibling; const n = t.value.length; c.textContent = n + '/90'; c.classList.toggle('over', n > 90); }
+function grow(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
+function mvSec(i, d) { const s = CMP.blueprint.sections, j = i + d; if (j < 0 || j >= s.length) return; [s[i], s[j]] = [s[j], s[i]]; renderEd(); dirty(); }
+function tblEd(i, t) {
+  return `<div class="tbl-ed"><table><tr>${t.cols.map((c, k) => `<th contenteditable oninput="CMP.blueprint.sections[${i}].table.cols[${k}]=this.innerText;dirty()">${esc(c)}</th>`).join('')}</tr>
+    ${t.rows.map((r, ri) => `<tr>${t.cols.map((_, k) => `<td contenteditable oninput="CMP.blueprint.sections[${i}].table.rows[${ri}][${k}]=this.innerText;dirty()">${esc(r[k] ?? '')}</td>`).join('')}</tr>`).join('')}</table></div>
+    <div class="row small"><button class="btn ghost sm" onclick="tblAdd(${i},'r')">+ 행</button><button class="btn ghost sm" onclick="tblAdd(${i},'c')">+ 열</button><button class="btn red sm" onclick="CMP.blueprint.sections[${i}].table=null;renderEd();dirty()">표 삭제</button><span class="muted">숫자 열은 PPT·웹에서 차트로 그려집니다</span></div>`;
+}
+function tblAdd(i, w) { const t = CMP.blueprint.sections[i].table; if (w === 'r') t.rows.push(t.cols.map(() => '')); else { t.cols.push('새 열'); t.rows.forEach(r => r.push('')); } renderEd(); dirty(); }
+function dirty() {
+  $('#saved').textContent = '저장 중…'; clearTimeout(saveT);
+  saveT = setTimeout(async () => { const d = await api(`/api/compose/${CMP.id}`, {method: 'PUT', body: {blueprint: CMP.blueprint}}); CMP.blueprint = d.compose.blueprint; $('#saved').textContent = '✓ 저장됨'; }, 600);
+}
+function renderOut() {
+  const def = CMP.fmt;
+  $('#outp').innerHTML = `
+   <div class="small muted" style="margin-bottom:6px">같은 설계도로 여러 형식을 한 번에</div>
+   <div class="fmtpick">${['hwp', 'ppt', 'web'].map(f => `<label><input type="checkbox" value="${f}" ${f === def ? 'checked' : ''}><span>${FMT[f]}</span></label>`).join('')}</div>
+   <button class="btn o" style="width:100%;justify-content:center;margin:12px 0 4px;padding:12px" onclick="generate()">🚀 문서 만들기${CMP.doc_id ? ' (새 버전)' : ''}</button>
+   <div class="small muted" style="text-align:center">전사 공용 스킬로 만듭니다 — 한글 koscom-hwp-report · PPT ppt-master(koscom-chevron) · 웹 koscom-webslide</div>
+   <div id="res" style="margin-top:14px">${LASTDOC && LASTDOC.id === CMP.doc_id ? resHtml(LASTDOC) : ''}</div>`;
+}
+async function generate() {
+  clearTimeout(saveT);
+  await api(`/api/compose/${CMP.id}`, {method: 'PUT', body: {blueprint: CMP.blueprint}});
+  const fmts = [...document.querySelectorAll('.fmtpick input:checked')].map(i => i.value);
+  if (!fmts.length) return toast('형식을 하나 이상 골라 주세요', true);
+  const d = await busy(`${fmts.map(f => FMT[f]).join(' · ')} 파일을 만드는 중…`, () => api(`/api/compose/${CMP.id}/generate`, {body: {fmts}}));
+  CMP.doc_id = d.doc.id; LASTDOC = d.doc;
+  toast(`v${d.doc.ver} 완성 — ${d.results.map(r => FMT[r.fmt] + ' ' + (r.ms / 1000).toFixed(1) + '초').join(', ')}`);
+  renderOut();
+  if (fmts.includes('ppt')) pollShots(d.doc.id, d.doc.ver);
+}
+function resHtml(doc) {
+  const cur = doc.files.filter(f => f.ver === doc.ver);
+  const fixable = cur.some(f => f.checks.some(c => !c.ok && c.fix));
+  return `<div class="row sp"><b>v${doc.ver} 결과</b><span class="small muted">${esc(doc.updated)}</span></div>
+   ${cur.map(f => `<div class="out-f" style="margin-top:8px"><div class="row sp">${fmtTag(f.fmt)}<span class="small muted">${(f.ms / 1000).toFixed(1)}초 · ${kb(f.size)}</span></div>
+     <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}</div>
+     <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>
+     <div class="row wrap" style="margin-top:8px"><a class="btn sm" href="/api/docs/${doc.id}/file?fmt=${f.fmt}&ver=${f.ver}">⬇ 받기</a>
+       <button class="btn ghost sm" onclick="preview('${doc.id}','${f.fmt}',${f.ver})">👁 미리보기</button></div></div>`).join('')}
+   ${fixable ? `<button class="btn" style="width:100%;justify-content:center" onclick="autoFix('${doc.id}')">🛠 검수 자동 수정 → 새 버전</button>` : ''}
+   <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="openDoc('${doc.id}')">👥 공유 범위 설정</button>`;
+}
+async function autoFix(id) {
+  const d = await busy('날짜·문장 끝·길이·제목을 고치는 중…', () => api(`/api/docs/${id}/fix`, {body: {}}));
+  LASTDOC = d.doc;
+  if (CMP && CMP.doc_id === id) { CMP.blueprint = d.doc.blueprint; renderEd(); $('#wsTitle').textContent = CMP.blueprint.title; }
+  toast(`v${d.doc.ver}로 고쳤습니다`);
+  if (VIEW === 'ws') renderOut(); else openDoc(id);
+}
+async function pollShots(id, ver, n = 0) {
+  if (n > 20) return;
+  const d = await api(`/api/docs/${id}`, {quiet: true}).catch(() => null);
+  const f = d?.doc.files.find(x => x.ver === ver && x.fmt === 'ppt');
+  if (f && f.shots.length) { if (LASTDOC?.id === id) LASTDOC = d.doc; return; }
+  setTimeout(() => pollShots(id, ver, n + 1), 2500);
+}
+async function preview(id, fmt, ver) {
+  if (fmt === 'web') return modal(`웹슬라이드 미리보기 <span class="small muted">v${ver} · 방향키·스크롤로 넘김</span>`, `<iframe src="/api/docs/${id}/file?fmt=web&ver=${ver}&inline=1" style="width:100%;height:70vh;border:0;border-radius:10px;background:#0b1830"></iframe>`, true);
+  if (fmt === 'ppt') {
+    const d = await api(`/api/docs/${id}`); const f = d.doc.files.find(x => x.ver === ver && x.fmt === 'ppt');
+    if (!f.shots.length) return modal('PPT 미리보기', `<div class="empty"><img src="/static/kosoe.webp" alt=""><p>PowerPoint로 슬라이드 그림을 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.</p></div>`);
+    return modal(`PPT 미리보기 <span class="small muted">v${ver} · ${f.shots.length}장 · PowerPoint 렌더</span>`, `<div class="shots">${f.shots.map(s => `<img src="/api/docs/${id}/shot/${ver}/${s}" alt="">`).join('')}</div>`, true);
+  }
+  const d = await api(`/api/docs/${id}/text?ver=${ver}`);
+  const L = d.lines;
+  modal(`한글 문서 내용 <span class="small muted">v${ver} · .hwp에서 직접 읽은 문단</span>`, `<div class="hwpv"><div class="pg"><div class="t">${esc(L[0])}</div>
+    <div class="small" style="text-align:right;color:#555">${esc(L[1] || '')}<br>${esc(L[2] || '')}</div>
+    ${L.slice(3).map(l => l.startsWith('■') ? `<div class="s">${esc(l)}</div>` : `<div class="p">${esc(l)}</div>`).join('')}</div></div>
+    <p class="small muted" style="margin-top:10px">실제 모양은 받은 .hwp 파일을 한컴오피스로 열어 확인하세요. 이 화면은 파일에서 뽑은 텍스트입니다.</p>`, true);
+}
+
+// ───────────── 문서함 ─────────────
+async function vDocs() {
+  const d = await api('/api/docs');
+  $('#main').innerHTML = `<div class="page-h"><div><h2>문서함</h2><p>내가 만든 문서와 나에게 공유된 문서. 권한(관리·쓰기·읽기)은 문서마다 다릅니다.</p></div></div>
+  <div class="card" style="overflow:hidden"><table class="list"><tr><th>제목</th><th>템플릿</th><th>형식</th><th>등급</th><th>작성자</th><th>내 권한</th><th>공유</th><th>수정</th></tr>
+  ${d.docs.map(x => `<tr class="click" onclick="openDoc('${x.id}')"><td><b>${esc(x.title)}</b> <span class="small muted">v${x.ver}</span>${x.locked ? ' <span class="chip bad">🔒 인터넷망 잠김</span>' : ''}</td>
+    <td class="small">${esc(x.template)}</td><td>${[...new Set(x.files.map(f => f.fmt))].map(fmtTag).join(' ') || fmtTag(x.fmt)}</td><td>${gradeTag(x.grade)}</td>
+    <td class="small">${esc(x.owner.name)}<br><span class="muted">${esc(x.owner.team)}</span></td><td><span class="perm ${x.perm}">${PERM[x.perm]}</span></td>
+    <td class="small">${x.acl.length ? x.acl.map(a => esc(a.v || '전사') + (a.p === 'w' ? '✎' : '')).join(', ') : '<span class="muted">나만</span>'}</td><td class="small muted">${esc(x.updated)}</td></tr>`).join('')}
+  </table>${d.docs.length ? '' : '<div class="empty"><img src="/static/kosoe.webp" alt=""><p>아직 문서가 없습니다.</p></div>'}</div>`;
+}
+async function openDoc(id) {
+  let d;
+  try { d = await api(`/api/docs/${id}`); } catch (e) { return; }
+  const x = d.doc, can = x.perm === 'm';
+  const vers = [...new Set(x.files.map(f => f.ver))];
+  modal(`${esc(x.title)} <span class="small muted">v${x.ver}</span>`, `
+   <div class="row wrap" style="margin-bottom:12px">${gradeTag(x.grade)}<span class="chip">${esc(x.template)}</span><span class="chip">작성 ${esc(x.owner.name)} · ${esc(x.owner.team)}</span><span class="perm ${x.perm}">내 권한: ${PERM[x.perm]}</span>
+     ${x.made?.minutes !== undefined ? `<span class="chip ok">⏱ ${x.made.minutes}분 걸림 (손으로 약 ${x.made.manual}분)</span>` : ''}</div>
+   <div class="grid2"><div><h4 style="margin-bottom:8px">버전 · 파일</h4>
+     ${vers.map(v => `<div class="out-f"><b>v${v}</b> ${x.files.filter(f => f.ver === v).map(f => `<span style="margin-left:8px">${fmtTag(f.fmt)} <a href="/api/docs/${x.id}/file?fmt=${f.fmt}&ver=${v}">받기</a> · <a href="#" onclick="preview('${x.id}','${f.fmt}',${v});return false">보기</a> <span class="small muted">${f.checks.filter(c => !c.ok).length ? '검수 ' + f.checks.filter(c => !c.ok).length + '건' : '검수 통과'}</span></span>`).join('')}</div>`).join('') || '<p class="muted small">파일 없음</p>'}
+     ${['m', 'w'].includes(x.perm) ? `<button class="btn" onclick="editDoc('${x.id}')">✍️ 이어서 편집</button>` : ''}</div>
+   <div><h4 style="margin-bottom:8px">공유 범위 ${can ? '' : '<span class="small muted">(관리 권한자만 변경)</span>'}</h4>
+     <div id="acl"></div>
+     ${can ? `<div class="row wrap" style="margin-top:8px"><select class="in" id="aT" style="width:auto"><option value="team">팀</option><option value="dept">부서</option><option value="user">사람</option><option value="corp">전사</option></select>
+       <input class="in" id="aV" style="width:140px" placeholder="이름·팀·부서" value="${esc(ME.user.team)}"><select class="in" id="aP" style="width:auto"><option value="r">읽기</option><option value="w">쓰기</option></select>
+       <button class="btn sm" onclick="aclAdd()">추가</button></div>
+       <div class="row" style="margin-top:10px"><span class="small">보안 등급</span><select class="in" id="aG" style="width:auto">${Object.entries(GRADE).map(([k, v]) => `<option value="${k}" ${k === x.grade ? 'selected' : ''}>${v}</option>`).join('')}</select>
+       <button class="btn o sm" onclick="aclSave('${x.id}')">저장</button></div>
+       <p class="small muted">대외비는 사람·팀까지만 공유됩니다. 인터넷망에서는 대외비 문서가 잠깁니다.</p>` : ''}</div></div>`, true);
+  ACL = x.acl.slice(); renderAcl(can);
+}
+let ACL = [];
+function renderAcl(can) {
+  $('#acl').innerHTML = ACL.length ? ACL.map((a, i) => `<div class="row" style="padding:6px 0;border-bottom:1px dashed var(--g)"><span class="chip">${({team: '팀', dept: '부서', user: '사람', corp: '전사'})[a.t]}</span><b class="grow">${esc(a.v || '전사')}</b><span class="perm ${a.p}">${PERM[a.p]}</span>${can ? `<button class="x" onclick="ACL.splice(${i},1);renderAcl(true)">✕</button>` : ''}</div>`).join('') : '<p class="muted small">나만 볼 수 있습니다 (기본값)</p>';
+}
+function aclAdd() { ACL.push({t: $('#aT').value, v: $('#aT').value === 'corp' ? '' : $('#aV').value.trim(), p: $('#aP').value}); renderAcl(true); }
+async function aclSave(id) { await api(`/api/docs/${id}/acl`, {method: 'PUT', body: {acl: ACL, grade: $('#aG').value}}); toast('공유 범위를 저장했습니다'); closeModal(); if (VIEW === 'docs') vDocs(); }
+async function editDoc(id) { const d = await api(`/api/docs/${id}/open`, {body: {}}); CMP = d.compose; closeModal(); if (!TPLS.length) TPLS = (await api('/api/templates')).templates; go('ws'); }
+
+// ───────────── 승인함 ─────────────
+async function vApprove() {
+  const [r, i] = await Promise.all([api('/api/requests'), api('/api/ireq')]);
+  const todo = r.requests.filter(x => x.can_decide), rest = r.requests.filter(x => !x.can_decide);
+  const itodo = i.requests.filter(x => x.can_decide), iact = i.requests.filter(x => x.can_revoke);
+  $('#main').innerHTML = `<div class="page-h"><div><h2>승인함</h2><p>${esc(ME.user.role_name)}로서 처리할 스킬 등록·변경(GitHub PR)과 인터넷망 사용 신청입니다.</p></div></div>
+  <h3 style="margin:0 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>스킬 등록·변경·복구 — 내 차례 <span class="chip o">${todo.length}</span></h3>
+  ${todo.map(reqCard).join('') || '<div class="card empty small">처리할 요청이 없습니다.</div>'}
+  <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>인터넷망 사용 신청 <span class="chip o">${itodo.length}</span></h3>
+  ${itodo.map(x => `<div class="card box" style="margin-bottom:10px"><div class="row sp wrap"><div><b>${esc(x.user)}</b> <span class="small muted">${esc(x.created)}</span><br>목적: ${esc(x.purpose)} · 기능: ${x.feats.map(f => ({ai: '외부 AI', search: '검색', access: '외부 사이트'})[f] || f).join(', ')}</div>
+    <div class="row"><input class="in" type="number" id="d-${x.id}" value="${x.days}" min="1" max="${i.policy.maxDays}" style="width:80px"><span class="small">일</span>
+    <button class="btn" onclick="idecide('${x.id}',true)">승인</button><button class="btn red" onclick="idecide('${x.id}',false)">반려</button></div></div></div>`).join('') || '<div class="card empty small">대기 중인 신청이 없습니다.</div>'}
+  ${iact.length ? `<h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>사용 중인 인터넷망 권한</h3>
+   <div class="card" style="overflow:hidden"><table class="list"><tr><th>사용자</th><th>목적</th><th>기한</th><th>승인</th><th></th></tr>${iact.map(x => `<tr><td>${esc(x.user)}</td><td class="small">${esc(x.purpose)}</td><td>~${esc(x.until)}</td><td class="small">${esc(x.decided_by)}</td><td><button class="btn red sm" onclick="irevoke('${x.id}')">회수</button></td></tr>`).join('')}</table></div>` : ''}
+  ${rest.length ? `<h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>전체 스킬 요청</h3>${rest.map(reqCard).join('')}` : ''}`;
+}
+async function idecide(id, approve) { await api(`/api/ireq/${id}/decide`, {body: {approve, days: +($('#d-' + id)?.value || 7)}}); toast(approve ? '인터넷망 사용을 승인했습니다' : '반려했습니다'); await refreshMe(); vApprove(); }
+async function irevoke(id) { await api(`/api/ireq/${id}/decide`, {body: {revoke: true}}); toast('권한을 회수했습니다'); await refreshMe(); go(VIEW); }
+
+// ───────────── 인터넷 사용 ─────────────
+async function vInet() {
+  const d = await api('/api/ireq');
+  const mine = d.requests.filter(x => x.uid === ME.user.id), wait = mine.find(x => x.status === 'wait');
+  const sec = ['security', 'corpAdmin'].includes(ME.user.role);
+  const ST = {wait: ['o', '승인 대기'], ok: ['ok', '승인'], no: ['bad', '반려'], revoked: ['bad', '회수']};
+  $('#main').innerHTML = `<div class="page-h"><div><h2>인터넷망 사용</h2><p>기본은 폐쇄망입니다. 상용 AI·검색이 필요하면 팀장 승인을 받아 기간을 정해 씁니다 (최대 ${d.policy.maxDays}일).</p></div></div>
+  <div class="grid2"><div class="card box"><h3>지금 상태</h3>
+    ${d.active ? `<div class="rec" style="margin:0;background:var(--okt);border-color:#c7e6d3"><span style="font-size:28px">🌐</span><div class="grow"><b>인터넷망 사용 가능 ~${esc(d.active.until)}</b><br><span class="small muted">승인 ${esc(d.active.decided_by)} · 위 [인터넷망] 버튼으로 전환</span></div></div>`
+      : `<div class="rec" style="margin:0"><span style="font-size:28px">🔒</span><div class="grow"><b>폐쇄망만 사용 중</b><br><span class="small muted">${wait ? '신청이 승인 대기 중입니다' : '아래에서 신청하세요'}</span></div></div>`}
+    <h3 style="margin-top:18px">신청</h3>
+    <div class="col"><input class="in" id="ip" placeholder="사용 목적 (예: 고객 제안서 작성에 상용 AI 사용)">
+      <div class="row"><span class="small">기간</span><input type="range" id="id" min="1" max="${d.policy.maxDays}" value="7" oninput="$('#idv').textContent=this.value+'일'" class="grow"><b id="idv">7일</b></div>
+      <div class="row small"><label><input type="checkbox" class="if" value="ai" checked> 외부 AI</label><label><input type="checkbox" class="if" value="search"> 검색</label><label><input type="checkbox" class="if" value="access"> 외부 사이트</label></div>
+      <button class="btn o" onclick="inetApply()" ${wait ? 'disabled' : ''}>팀장에게 신청</button>
+      <p class="small muted" style="margin:0">인터넷망에서는 대외비 템플릿·문서가 잠기고, 외부 AI로 보내는 글의 고객사명·전화번호·계좌번호 등은 자동으로 가립니다.</p></div></div>
+   <div class="card box"><h3>🔒 마스킹 시험</h3><p class="small muted">외부 AI에 실제로 보내는 글이 어떻게 바뀌는지 확인합니다. 응답에서는 원래 값으로 되돌립니다.</p>
+     <textarea class="in" id="mt-in" rows="3">A증권 김대리(010-1234-5678)에게 계좌 123-45-678901 정산 결과와 B은행 제안 일정을 공유</textarea>
+     <button class="btn ghost sm" style="margin-top:8px" onclick="maskTest()">가려 보기</button><div id="mt-out" style="margin-top:10px"></div>
+     ${sec ? `<h3 style="margin-top:18px">🛡️ 보안 정책 <span class="chip o">${esc(ME.user.role_name)}</span></h3>
+       <div class="row wrap small">${['주민등록번호', '휴대전화번호', '계좌번호', '고객사명'].map(k => `<label><input type="checkbox" class="pm" value="${k}" ${d.policy.mask.includes(k) ? 'checked' : ''}> ${k}</label>`).join('')}</div>
+       <div class="row" style="margin-top:8px"><span class="small">최대 기간</span><input class="in" type="number" id="pmx" value="${d.policy.maxDays}" style="width:80px"><span class="small">일</span><button class="btn sm" onclick="savePol()">정책 저장</button></div>` : ''}</div></div>
+  <h3 style="margin:26px 0 10px;display:flex;gap:8px;align-items:center"><i class="chev"></i>${sec ? '전체 신청 이력' : '내 신청 이력'}</h3>
+  <div class="card" style="overflow:hidden"><table class="list"><tr><th>신청자</th><th>목적</th><th>기간</th><th>상태</th><th>처리</th><th>신청일</th></tr>
+   ${(sec ? d.requests : mine).map(x => `<tr><td>${esc(x.user)}</td><td class="small">${esc(x.purpose)}</td><td>${x.days}일${x.until ? ' (~' + esc(x.until) + ')' : ''}</td><td><span class="chip ${ST[x.status][0]}">${ST[x.status][1]}</span></td><td class="small">${esc(x.decided_by || '')}${x.can_revoke ? ` <button class="btn red sm" onclick="irevoke('${x.id}')">회수</button>` : ''}</td><td class="small muted">${esc(x.created)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted small">없음</td></tr>'}</table></div>`;
+}
+async function inetApply() {
+  await api('/api/ireq', {body: {purpose: $('#ip').value, days: +$('#id').value, feats: [...document.querySelectorAll('.if:checked')].map(i => i.value)}});
+  toast('신청했습니다 — 팀장 승인 뒤 인터넷망을 쓸 수 있습니다'); vInet();
+}
+async function maskTest() {
+  const d = await api('/api/mask-test', {body: {text: $('#mt-in').value}});
+  $('#mt-out').innerHTML = `<div class="small muted">외부 AI로 가는 글</div><pre class="code">${esc(d.masked)}</pre><div class="row wrap" style="margin-top:6px">${Object.entries(d.map).map(([k, v]) => `<span class="chip">${esc(k)} ← ${esc(v)}</span>`).join('')}</div>`;
+}
+async function savePol() { await api('/api/policy', {method: 'PUT', body: {maxDays: +$('#pmx').value, mask: [...document.querySelectorAll('.pm:checked')].map(i => i.value)}}); toast('정책을 저장했습니다'); vInet(); }
+
+// ───────────── 대시보드 · 감사 ─────────────
+async function vDash() {
+  const [d, e] = await Promise.all([api('/api/dashboard'), api('/api/events')]);
+  const k = d.kpi;
+  $('#main').innerHTML = `<div class="page-h"><div><h2>대시보드</h2><p>실제로 만들어진 문서와 처리 기록으로 계산한 수치입니다.</p></div></div>
+  <div class="kpis">
+   <div class="card kpi"><div class="l">만든 문서</div><div class="v">${k.docs}<small> 건 · 파일 ${k.files}</small></div></div>
+   <div class="card kpi"><div class="l">절감 시간 (손 작업 추정 대비)</div><div class="v">${k.saved_h}<small> 시간</small></div></div>
+   <div class="card kpi"><div class="l">AI 생성 비율 · 검수 통과율(확인 필요 안내 제외)</div><div class="v">${k.llm_rate}<small>% · ${k.check_rate}%</small></div></div>
+   <div class="card kpi"><div class="l">양식 · 승인 대기 · 인터넷 승인</div><div class="v">${k.templates}<small> · ${k.pending} · ${k.inet}</small></div></div></div>
+  <div class="grid3"><div class="card box"><h3>형식별 파일</h3><canvas id="c1" height="200"></canvas></div>
+   <div class="card box"><h3>많이 쓰는 양식</h3><canvas id="c2" height="200"></canvas></div>
+   <div class="card box"><h3>평균 생성 시간 (초)</h3><canvas id="c3" height="200"></canvas></div></div>
+  <div class="card box" style="margin-top:14px"><h3>🕘 최근 활동</h3>${e.events.slice(0, 14).map(evRow).join('')}</div>`;
+  const O = '#ee6d1d', N = '#00338d', G = '#1f7a4d';
+  Chart.defaults.font.family = 'KoPub, Malgun Gothic'; Chart.defaults.color = '#6e6e73';
+  charts.push(new Chart($('#c1'), {type: 'doughnut', data: {labels: ['한글', 'PPT', '웹'], datasets: [{data: [d.by_fmt.hwp, d.by_fmt.ppt, d.by_fmt.web], backgroundColor: ['#2f74c0', '#d24726', G], borderWidth: 0}]}, options: {cutout: '62%', plugins: {legend: {position: 'bottom'}}}}));
+  charts.push(new Chart($('#c2'), {type: 'bar', data: {labels: d.tops.map(t => t.name.length > 10 ? t.name.slice(0, 10) + '…' : t.name), datasets: [{data: d.tops.map(t => t.uses), backgroundColor: d.tops.map(t => t.scope === 'corp' ? N : O), borderRadius: 5}]}, options: {indexAxis: 'y', plugins: {legend: {display: false}}, scales: {x: {grid: {display: false}}, y: {grid: {display: false}}}}}));
+  charts.push(new Chart($('#c3'), {type: 'bar', data: {labels: ['한글', 'PPT', '웹'], datasets: [{data: [d.avg_ms.hwp / 1000, d.avg_ms.ppt / 1000, d.avg_ms.web / 1000], backgroundColor: [N, O, G], borderRadius: 6}]}, options: {plugins: {legend: {display: false}}, scales: {x: {grid: {display: false}}}}}));
+}
+const evRow = x => `<div class="ev"><span class="t">${esc(x.t)}</span><span class="w">${esc(x.who)}</span><span class="grow">${esc(x.what)}</span></div>`;
+async function vAudit() {
+  const e = await api('/api/events');
+  $('#main').innerHTML = `<div class="page-h"><div><h2>감사 로그</h2><p>로그인·망 전환·생성·다운로드·공유·승인·마스킹을 모두 남깁니다.</p></div></div>
+   <div class="card box">${e.events.map(evRow).join('')}</div>`;
+}
+
+boot();
+</script>
+</body>
+</html>

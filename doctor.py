@@ -1,0 +1,88 @@
+"""설치 점검: python kosoe.py doctor  (AI 실제 호출까지: python kosoe.py doctor --ping)"""
+import importlib
+import os
+import shutil
+import subprocess
+import sys
+
+for s in (sys.stdout, sys.stderr):
+    s.reconfigure(encoding='utf-8', errors='replace')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from core import CFG, HOME  # noqa: E402
+
+ok_all = True
+
+
+def say(ok, name, detail=''):
+    global ok_all
+    ok_all &= ok in (True, None)
+    mark = {True: '✅', False: '❌', None: '⚠️ '}[ok]
+    print(f'{mark} {name}' + (f' — {detail}' if detail else ''))
+
+
+def main():
+    print(f'코쇠오피스 점검 · 데이터 폴더 {HOME}\n')
+    say(sys.version_info >= (3, 10), 'Python 3.10+', sys.version.split()[0])
+    for m, pkg in (('flask', 'flask'), ('pptx', 'python-pptx'), ('openpyxl', 'openpyxl'), ('fitz', 'pymupdf'), ('PIL', 'pillow'),
+                   ('yaml', 'pyyaml'), ('lxml', 'lxml'), ('numpy', 'numpy'), ('fontTools', 'fonttools')):
+        try:
+            importlib.import_module(m)
+            say(True, f'파이썬 패키지 {pkg}')
+        except Exception:
+            say(False, f'파이썬 패키지 {pkg}', 'pip install -r requirements.txt')
+    try:
+        import run_ppt_master
+        run_ppt_master.patch()
+        from pptx import Presentation
+        Presentation()
+        say(True, 'python-pptx 기본 서식(메모리 공급)')
+    except Exception as e:
+        say(False, 'python-pptx 기본 서식', str(e)[:120])
+    pkg_tpl = os.path.join(os.path.dirname(importlib.import_module('pptx').__file__), 'templates')
+    if os.path.isdir(pkg_tpl) and any(f.endswith('.pia') for f in os.listdir(pkg_tpl)):
+        say(None, '사내 보호 도구가 python-pptx 기본 서식을 암호화함', '코쇠오피스는 PyPI 원본 서식을 메모리로 공급해 동작 — 조치 불필요(보호 도구는 해제하지 않음)')
+
+    say(bool(shutil.which('java')), 'Java 8+ (한글 엔진)', shutil.which('java') or 'JDK/JRE 설치 필요')
+    say(bool(shutil.which('git')), 'Git', shutil.which('git') or 'Git 설치 필요')
+    gh = shutil.which('gh')
+    r = subprocess.run(['gh', 'auth', 'status'], capture_output=True) if gh else None
+    say(bool(r and r.returncode == 0), 'GitHub CLI 로그인 (스킬 저장소·전사 스킬)', 'gh auth login' if not (r and r.returncode == 0) else '')
+
+    import skills
+    import corp
+    st = skills.ensure(force=True)
+    say(st['mode'] == 'github', f"스킬 저장소 {skills.SLUG}", f"{st['mode']} {st['head'][:7]} {st['error'][:120]}")
+    for c in corp.status():
+        try:
+            corp.ensure(c['id'])
+            say(True, f"전사 스킬 {c['id']}", f"{c['repo']} @ {c['short']}")
+        except Exception as e:
+            say(False, f"전사 스킬 {c['id']}", f"{c['repo']} — 접근 권한 확인: {str(e)[:120]}")
+    if '--smoke' in sys.argv:
+        import engines
+        bp = {'title': '점검 문서', 'sections': [{'heading': '개요', 'items': [{'label': '목적', 'text': '설치 점검', 'children': []}], 'table': None}]}
+        for fmt in ('hwp', 'ppt', 'web'):
+            try:
+                p, w, ms, e = engines.make(fmt, bp, {'name': '점검', 'desc': ''}, {'dept': '점검팀', '담당': '점검'}, 'doctor', 1)
+                say(not w, f'{fmt} 생성 ({e["name"]})', f'{ms}ms ' + '; '.join(w))
+            except Exception as ex:
+                say(False, f'{fmt} 생성', str(ex)[:160])
+
+    import llm
+    if CFG['llm_kind'] == 'claude_cli':
+        st = llm.cli_status(True)
+        say(bool(st['path']), 'Claude Code CLI (구독)', st['path'] or '.env의 KOSOE_CLAUDE_CLI 에 경로 지정')
+        say(True if st['ready'] else None, 'Claude 로그인', st['detail'] if st['ready'] else f'python kosoe.py login  (그 전엔 규칙 기반 보조 모드)')
+        if st['ready'] and '--ping' in sys.argv:
+            p = llm.ping()
+            say(p['ok'], f"AI 호출 ({llm.display()})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
+    else:
+        say(None, f"AI: {CFG['llm_kind']}", llm.display())
+    pp = [p for p in (r'C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE', r'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE') if os.path.exists(p)]
+    say(True if pp else None, 'PowerPoint (PPT 미리보기 그림)', '있음' if pp else '없으면 미리보기 그림만 생략')
+    print('\n' + ('준비 완료 — python kosoe.py' if ok_all else '❌ 항목을 먼저 해결하세요'))
+    return 0 if ok_all else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
