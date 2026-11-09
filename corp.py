@@ -25,7 +25,7 @@ SPARSE = {
 
 def _g(*a, cwd=None, **k):
     """부분 복제(blob:none)는 파일을 읽을 때 원격에서 받아 오므로, 캐시 안의 모든 git 명령에 gh 자격 증명을 붙인다."""
-    return git_remote('-c', 'core.quotepath=false', *a, cwd=cwd, **k)
+    return git_remote('-c', 'core.quotepath=false', '-c', 'core.longpaths=true', *a, cwd=cwd, **k)
 # 포털이 부르는 진입점(상대 경로)
 ENTRY = {
     'koscom-hwp-report': {'jar': 'scripts/koscom-hwp.jar', 'lib': 'lib/hwplib-1.1.9.jar', 'templates': 'templates',
