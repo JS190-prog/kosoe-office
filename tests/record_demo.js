@@ -220,7 +220,7 @@ window.__cap = (scene, text, sub) => {
   await login('홍길동'); await nav('docs');
   await cap('2:50', '세 형식 · 버전 · 검수 내역', 'PPT · 웹슬라이드 · 한글 — 만들고, 고치고, 검수까지');
   await pause(3000);
-  await nav('dash'); await pause(1000);
+  await page.evaluate(() => window.scrollTo(0, 0)); await pause(800);
   await cap('', '코쇠오피스', '회사 양식대로 만들고 고치고 검수까지 · 대표 문서 몇 건이면 우리 부서 스킬 · 정본은 Git');
   await pause(4000);
   mark('end', 'end');
