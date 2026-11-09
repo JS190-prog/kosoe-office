@@ -494,8 +494,8 @@ async function preview(id, fmt, ver) {
   if (fmt === 'web') return modal(`웹슬라이드 미리보기 <span class="small muted">v${ver} · 방향키·스크롤로 넘김</span>`, `<iframe src="/api/docs/${id}/file?fmt=web&ver=${ver}&inline=1" style="width:100%;height:70vh;border:0;border-radius:10px;background:#0b1830"></iframe>`, true);
   if (fmt === 'ppt') {
     const d = await api(`/api/docs/${id}`); const f = d.doc.files.find(x => x.ver === ver && x.fmt === 'ppt');
-    if (!f.shots.length) return modal('PPT 미리보기', `<div class="empty"><img src="/static/kosoe.webp" alt=""><p>PowerPoint로 슬라이드 그림을 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.</p></div>`);
-    return modal(`PPT 미리보기 <span class="small muted">v${ver} · ${f.shots.length}장 · PowerPoint 렌더</span>`, `<div class="shots">${f.shots.map(s => `<img src="/api/docs/${id}/shot/${ver}/${s}" alt="">`).join('')}</div>`, true);
+    if (!f.shots.length) return modal('PPT 미리보기', `<div class="empty"><img src="/static/kosoe.webp" alt=""><p>슬라이드 그림을 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.</p></div>`);
+    return modal(`PPT 미리보기 <span class="small muted">v${ver} · ${f.shots.length}장 · ${f.shots[0].endsWith('.svg') ? '장별 SVG(같은 디자인 원본)' : 'PowerPoint 렌더'}</span>`, `<div class="shots">${f.shots.map(s => `<img src="/api/docs/${id}/shot/${ver}/${s}" alt="">`).join('')}</div>`, true);
   }
   const d = await api(`/api/docs/${id}/text?ver=${ver}`);
   const L = d.lines;

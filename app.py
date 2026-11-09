@@ -6,6 +6,8 @@ import json
 import os
 import re
 import secrets
+import unicodedata
+from shutil import which as shutil_which
 import subprocess
 import threading
 import time
@@ -209,8 +211,24 @@ def _shots(doc_id, ver):
     return sorted(os.listdir(d), key=lambda n: int(re.sub(r'\D', '', n) or 0)) if os.path.isdir(d) else []
 
 
+def _svg_shots(doc_id, ver):
+    """셰브론 엔진이 만든 장별 SVG(같은 디자인 원본)를 미리보기 그림으로 쓴다 — PowerPoint가 없는 PC(macOS 등)."""
+    import shutil
+    src = os.path.join(engines.job_dir(doc_id, ver), 'ppt', 'svg_output')
+    if not os.path.isdir(src):
+        return False
+    dst = os.path.join(engines.OUT, doc_id, f'v{ver}_shots')
+    os.makedirs(dst, exist_ok=True)
+    for i, f in enumerate(sorted(x for x in os.listdir(src) if x.endswith('.svg')), 1):
+        shutil.copy(os.path.join(src, f), os.path.join(dst, f's{i}.svg'))
+    return True
+
+
 def ppt_shots(path, doc_id, ver):
-    """PowerPoint가 있으면 슬라이드를 PNG로 내보내 미리보기를 만든다(백그라운드)."""
+    """미리보기: Windows + PowerPoint면 실제 PPTX를 PNG로 내보내고(백그라운드), 아니면 장별 SVG를 쓴다."""
+    if os.name != 'nt' or not shutil_which('powershell'):
+        _svg_shots(doc_id, ver)
+        return
     dst = os.path.join(engines.OUT, doc_id, f'v{ver}_shots')
     tmp = dst + '_tmp'
     os.makedirs(tmp, exist_ok=True)
@@ -223,8 +241,10 @@ def ppt_shots(path, doc_id, ver):
                 import shutil
                 shutil.rmtree(dst, ignore_errors=True)
             os.replace(tmp, dst)
+            return
     except Exception:
         pass
+    _svg_shots(doc_id, ver)                 # PowerPoint가 없거나 실패하면 SVG로
 
 
 # ───────────── 정적 ─────────────
@@ -323,7 +343,7 @@ def upload():
     if not f or not f.filename:
         return err('파일이 없습니다')
     uid = core.new_id('f')
-    name = os.path.basename(f.filename)
+    name = unicodedata.normalize('NFC', os.path.basename(f.filename))      # macOS 파일명(한글 자모 분리) 정리
     path = os.path.join(UP, uid + '_' + re.sub(r'[^\w.\-가-힣]', '_', name))
     f.save(path)
     try:

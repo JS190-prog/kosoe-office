@@ -42,7 +42,13 @@ def main():
     if os.path.isdir(pkg_tpl) and any(f.endswith('.pia') for f in os.listdir(pkg_tpl)):
         say(None, '사내 보호 도구가 python-pptx 기본 서식을 암호화함', '코쇠오피스는 PyPI 원본 서식을 메모리로 공급해 동작 — 조치 불필요(보호 도구는 해제하지 않음)')
 
-    say(bool(shutil.which('java')), 'Java 8+ (한글 엔진)', shutil.which('java') or 'JDK/JRE 설치 필요')
+    mac = sys.platform == 'darwin'
+    jv = ''
+    if shutil.which('java'):
+        r0 = subprocess.run(['java', '-version'], capture_output=True)
+        jv = (r0.stderr or r0.stdout).decode('utf-8', 'replace').splitlines()[0] if r0.returncode == 0 else ''
+    say(bool(jv), 'Java 8+ (한글 엔진)', jv or ('brew install openjdk 후 안내대로 PATH 연결(예: sudo ln -sfn $(brew --prefix)/opt/openjdk/libexec/openjdk.jdk '
+                                               '/Library/Java/JavaVirtualMachines/openjdk.jdk)' if mac else 'JDK/JRE 설치 필요'))
     say(bool(shutil.which('git')), 'Git', shutil.which('git') or 'Git 설치 필요')
     gh = shutil.which('gh')
     r = subprocess.run(['gh', 'auth', 'status'], capture_output=True) if gh else None
@@ -78,9 +84,17 @@ def main():
             say(p['ok'], f"AI 호출 ({llm.display()})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
     else:
         say(None, f"AI: {CFG['llm_kind']}", llm.display())
-    pp = [p for p in (r'C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE', r'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE') if os.path.exists(p)]
-    say(True if pp else None, 'PowerPoint (PPT 미리보기 그림)', '있음' if pp else '없으면 미리보기 그림만 생략')
-    print('\n' + ('준비 완료 — python kosoe.py' if ok_all else '❌ 항목을 먼저 해결하세요'))
+    if os.name == 'nt':
+        pp = [p for p in (r'C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE', r'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE') if os.path.exists(p)]
+        say(True if pp else None, 'PowerPoint (PPT 미리보기 그림)', '있음' if pp else '없으면 장별 SVG로 미리보기')
+    else:
+        say(True, 'PPT 미리보기', '장별 SVG(같은 디자인 원본)로 보여 줍니다')
+        fonts = [os.path.expanduser('~/Library/Fonts'), '/Library/Fonts', os.path.expanduser('~/.local/share/fonts'), '/usr/share/fonts']
+        has = any('KoPub' in f for d in fonts if os.path.isdir(d) for f in os.listdir(d))
+        say(True if has else None, 'KoPub돋움체 (PPT 글꼴)', '설치됨' if has else '없으면 PPT를 열 때 다른 글꼴로 보입니다 — 무료 KoPub돋움체 설치 권장')
+        say(None, '한글(.hwp) 열어 보기', 'macOS는 한컴오피스 Mac 또는 한컴독스(웹)로 확인 — 앱의 「미리보기」는 파일에서 읽은 문단을 보여 줌')
+    py = 'python' if os.name == 'nt' else 'python3'
+    print('\n' + (f'준비 완료 — {py} kosoe.py' if ok_all else '❌ 항목을 먼저 해결하세요'))
     return 0 if ok_all else 1
 
 

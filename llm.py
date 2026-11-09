@@ -81,21 +81,45 @@ CLI_ENV_DROP = ('CLAUDECODE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHRO
 _cli_cache = {'t': 0, 'v': None}
 
 
+def _cli_version(exe):
+    try:
+        out = subprocess.run([exe, '--version'], capture_output=True, timeout=20, env=_cli_env()).stdout.decode('utf-8', 'replace')
+        m = re.search(r'(\d+)\.(\d+)\.(\d+)', out)
+        return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+    except Exception:
+        return (0, 0, 0)
+
+
+_cli_found = {}
+
+
 def cli_path():
-    """KOSOE_CLAUDE_CLI → 데스크톱 앱에 들어 있는 최신 claude.exe → PATH의 claude."""
+    """KOSOE_CLAUDE_CLI → 데스크톱 앱에 들어 있는 최신 CLI(Windows·macOS) → PATH의 claude(2.x 이상).
+    1.0.x 전역 npm claude는 응답이 멈추는 사례가 있어 2.x 이상만 쓴다."""
     if CFG.get('claude_cli'):
         return CFG['claude_cli']
-    base = os.path.join(os.environ.get('APPDATA', ''), 'Claude', 'claude-code')
+    if 'p' in _cli_found:
+        return _cli_found['p']
+    bases = [os.path.join(os.environ.get('APPDATA', ''), 'Claude', 'claude-code'),                              # Windows 데스크톱 앱
+             os.path.expanduser('~/Library/Application Support/Claude/claude-code')]                          # macOS 데스크톱 앱
     found = []
-    for p in glob.glob(os.path.join(base, '*', '*', 'claude.exe')):
-        ver = os.path.basename(os.path.dirname(os.path.dirname(p)))
-        try:
-            found.append((tuple(int(x) for x in ver.split('.')), p))
-        except ValueError:
-            pass
+    for base in bases:
+        for name in ('claude.exe', 'claude'):
+            for p in glob.glob(os.path.join(base, '*', '*', name)) + glob.glob(os.path.join(base, '*', name)):
+                ver = next((part for part in p.replace('\\', '/').split('/') if re.fullmatch(r'\d+\.\d+\.\d+', part)), '')
+                if ver and os.access(p, os.X_OK):
+                    found.append((tuple(int(x) for x in ver.split('.')), p))
     if found:
-        return max(found)[1]
-    return shutil.which('claude') or ''
+        _cli_found['p'] = max(found)[1]
+        return _cli_found['p']
+    cands = [shutil.which('claude'), os.path.expanduser('~/.local/bin/claude'), os.path.expanduser('~/.claude/local/claude'),
+             '/opt/homebrew/bin/claude', '/usr/local/bin/claude']
+    for c in cands:
+        if c and os.path.exists(c) and _cli_version(c) >= (2, 0, 0):
+            _cli_found['p'] = c
+            return c
+    _cli_found['p'] = ''
+    return ''
 
 
 def _cli_env():

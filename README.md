@@ -18,6 +18,23 @@
 | 4 | `.\setup.ps1` — 패키지 설치 · `gh auth login` · 스킬 저장소와 전사 공용 스킬 받기 · 점검 |
 | 5 | `python kosoe.py` → 브라우저에서 http://localhost:8810 |
 
+> 아래 명령의 `python`은 macOS에서는 가상환경을 켠 뒤(`source .venv/bin/activate`) 쓰거나 `python3`로 바꿔 씁니다.
+
+## 설치 (macOS)
+
+| # | 할 일 |
+|---|---|
+| 1 | `brew install python git gh openjdk` (openjdk는 설치 끝에 나오는 안내대로 `java`가 PATH에 잡히게 연결) |
+| 2 | Claude Code 설치(`claude` 명령, 2.x) 후 본인 계정으로 로그인 — `claude auth login` |
+| 3 | `git clone https://github.com/humanist96/kosoe-office && cd kosoe-office` |
+| 4 | `./setup.sh` — `.venv` 가상환경 · 패키지 설치 · `gh auth login` · 스킬 저장소와 전사 공용 스킬 받기 · 점검 |
+| 5 | `source .venv/bin/activate && python kosoe.py` → http://localhost:8810 |
+
+macOS에서 달라지는 점
+- PPT 미리보기는 PowerPoint 대신 **장별 SVG**(같은 디자인 원본)로 보여 줍니다. 받은 .pptx는 Keynote·PowerPoint for Mac에서 열립니다(KoPub돋움체 설치 권장).
+- 한글(.hwp)은 한컴오피스 Mac 또는 한컴독스(웹)로 엽니다. 앱의 「미리보기」는 파일에서 읽은 문단을 보여 줍니다.
+- 데이터 폴더는 `~/.kosoe`, Claude CLI는 PATH의 `claude`(2.x) → `~/.local/bin/claude` → 데스크톱 앱 내장 순으로 찾습니다. 다르면 `.env`의 `KOSOE_CLAUDE_CLI`.
+
 저장소 접근 권한이 곧 사용 권한입니다: 앱 저장소, 스킬 저장소(`humanist96/kosoe-office-skills`), 전사 공용 스킬 4종(그중 `koscom-doc-pack`은 비공개)에 읽기 권한이 있어야 합니다.
 
 ```
