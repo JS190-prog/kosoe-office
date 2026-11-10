@@ -125,7 +125,9 @@
     try {
       const n = doc.pageCount();
       if (!n) throw new Error('쪽이 없습니다');
-      return Array.from({length: n}, (_, i) => doc.renderPageSvg(i));
+      // rhwp는 쪽마다 id(cell-clip-81 · grad3 …)를 새로 매긴다. 여러 쪽을 한 화면에 이어 붙이면 url(#…)이 앞 쪽의 같은 id를 집어
+      // 뒤 쪽 표 칸 글자가 엉뚱한 영역으로 잘려 사라진다 → id와 url(#…) 참조에 쪽 번호를 붙인다(색 값 fill="#000" 은 그대로)
+      return Array.from({length: n}, (_, i) => doc.renderPageSvg(i).replace(/\bid="([^"]+)"/g, `id="p${i}-$1"`).replace(/url\(#([^)]+)\)/g, `url(#p${i}-$1)`));
     } finally { try { doc.free(); } catch (e) {} }
   };
 
