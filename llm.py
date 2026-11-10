@@ -304,7 +304,14 @@ def ollama_status(cfg, force=False):
         elif name not in ms:
             v = {'ready': False, 'detail': f'서버에 없는 모델: {model}'}
         else:
-            v = {'ready': True, 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 문서가 PC 밖(ollama.com)으로 나갑니다' if ms[name] else '')}
+            try:     # 목록에 있어도 모델 파일이 없거나(“does not support chat”) 임베딩 전용이면 글을 못 쓴다
+                caps = _ol_req(cfg, '/api/show', {'model': name}).get('capabilities')
+            except urllib.error.HTTPError as e:      # 모델 없음(404 "model '…' not found")만 못 씀 — 프록시가 막은 /api/show 등은 넘어간다
+                caps = [] if e.code == 404 and "model '" in e.read().decode(errors='ignore') else None
+            if caps is not None and 'completion' not in caps:
+                v = {'ready': False, 'detail': f'쓸 수 없는 모델: {model} — 서버에 모델 파일이 없거나 글쓰기 모델이 아닙니다(서버에서 ollama pull {model})'}
+            else:
+                v = {'ready': True, 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 문서가 PC 밖(ollama.com)으로 나갑니다' if ms[name] else '')}
     except Exception as e:
         v = {'ready': False, 'detail': _ol_err(e, cfg['url'])}
     _ol[k] = (time.time(), v)
