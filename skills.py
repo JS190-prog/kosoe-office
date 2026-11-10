@@ -245,14 +245,15 @@ def form_rows():
                      'outline': f['outline'], 'desc': f.get('desc', ''), 'preset': f.get('preset', ''), 'grade': f.get('grade', 'i'),
                      'dept': '', 'team': '', 'owner': '전사', 'ver': '-', 'path': 'registry/corp.forms.yaml', 'tag': '',
                      'fields': [], 'rules': f.get('rules', ''), 'fixed': [], 'skill': {'id': '', 'corp': f.get('corp', '')}})
-    # 서식 채우기형 한글 스킬(목적별: 계약서·공문 등) — 잠금 파일에 kind: hwp-fill 로 올라온 스킬의 form.yaml이 곧 전사 양식 카드
+    # 서식 채우기형 스킬(목적별: 계약서·견적서 등) — 잠금 파일에 kind: hwp-fill · xlsx-fill 로 올라온 스킬의 form.yaml이 곧 전사 양식 카드
     for cid, c in corp.fill_skills():
         try:
             f = corp.form_of(cid)
         except Exception as e:
             print(f'[skills] 서식 채우기 스킬 {cid}의 form.yaml을 읽지 못함: {str(e)[:160]}')
             continue
-        rows.append({'id': f.get('id') or cid, 'name': f.get('name') or cid, 'fmt': 'hwp', 'use': f.get('use', '계약'), 'scope': 'corp',
+        fmt = corp.fill_fmt(f)
+        rows.append({'id': f.get('id') or cid, 'name': f.get('name') or cid, 'fmt': fmt, 'use': f.get('use', '견적' if fmt == 'xlsx' else '계약'), 'scope': 'corp',
                      'outline': [s.get('heading', '') for s in f.get('sections') or []], 'desc': f.get('purpose', ''), 'preset': '',
                      'grade': f.get('grade', 'i'), 'dept': '', 'team': '', 'owner': f.get('owner', '전사'), 'ver': '-',
                      'path': 'registry/corp.lock.yaml', 'tag': '', 'fields': [], 'rules': '', 'fixed': [],

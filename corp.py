@@ -57,7 +57,14 @@ def _local():
             sha = git('rev-parse', 'HEAD', cwd=p).strip()
         except Exception:
             continue
-        out[cid] = {'repo': p, 'sha': sha, 'local': True, 'kind': 'hwp-fill' if os.path.exists(os.path.join(p, 'form.yaml')) else ''}
+        kind = ''
+        fp = os.path.join(p, 'form.yaml')
+        if os.path.exists(fp):                              # 서식 채우기형이면 form.yaml의 kind(없으면 한글)
+            try:
+                kind = (yaml.safe_load(open(fp, encoding='utf-8')) or {}).get('kind') or 'hwp-fill'
+            except Exception:
+                kind = 'hwp-fill'
+        out[cid] = {'repo': p, 'sha': sha, 'local': True, 'kind': kind if kind in FILL_KINDS else ''}
     return out
 
 
@@ -72,9 +79,18 @@ def lock():
 _forms = {}
 
 
+# 서식 채우기형 스킬의 종류 → 만들어지는 파일 형식. 한글(.hwp)은 계약서·공문, 엑셀(.xlsx)은 견적서 등
+FILL_KINDS = {'hwp-fill': 'hwp', 'xlsx-fill': 'xlsx'}
+
+
+def fill_fmt(form):
+    """서식 채우기형 양식(form.yaml)이 만드는 파일 형식."""
+    return FILL_KINDS.get((form or {}).get('kind'), 'hwp')
+
+
 def fill_skills():
-    """서식 채우기형 한글 스킬(kind: hwp-fill) 목록 → [(id, 잠금 항목)]. 목적마다 스킬이 따로 있다(계약서·공문 등)."""
-    return [(cid, c) for cid, c in lock()['corp_skills'].items() if c.get('kind') == 'hwp-fill']
+    """서식 채우기형 스킬(kind: hwp-fill · xlsx-fill) 목록 → [(id, 잠금 항목)]. 목적마다 스킬이 따로 있다(계약서·견적서 등)."""
+    return [(cid, c) for cid, c in lock()['corp_skills'].items() if c.get('kind') in FILL_KINDS]
 
 
 def form_of(cid):

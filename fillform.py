@@ -11,7 +11,15 @@ TODO = '(확인 필요)'
 
 
 def _default(f):
-    return str(f.get('default') or '').replace('{year}', str(datetime.date.today().year))
+    """기본값. {year} = 올해, {today:YYYY년 MM월 DD일} = 오늘(YYYY · MM · DD · M · D 자리에 값이 들어간다)."""
+    d = datetime.date.today()
+
+    def today(m):
+        s = m.group(1) or 'YYYY-MM-DD'
+        for k, v in (('YYYY', str(d.year)), ('MM', f'{d.month:02d}'), ('DD', f'{d.day:02d}'), ('M', str(d.month)), ('D', str(d.day))):
+            s = s.replace(k, v)
+        return s
+    return re.sub(r'\{today(?::([^{}]*))?\}', today, str(f.get('default') or '')).replace('{year}', str(d.year))
 
 
 def fields_of(form):
@@ -35,10 +43,25 @@ def prompt_spec(form):
             bits.append(f"  자료에 없으면 비워 둔다(기본값 '{_default(f)}'이 들어간다)")
         out.append('\n'.join(bits))
     for h, t in tables_of(form):
-        # key 를 칸처럼 맨 앞에 둔다 — '표 이용료'로 적으면 key 를 "표 이용료"로 읽는 모델이 있다(DeepSeek: 표가 통째로 빠짐)
+        # 칸과 같은 모양(- key (설명))으로 적는다 — '표 이용료'처럼 적으면 AI가 '표 '까지 key로 돌려주는 일이 있었다(DeepSeek: 표가 통째로 빠짐)
         out.append(f"- {t['key']} (표 · {h}): 열 {t['cols']}" + (f" · 단위 {t['unit']}" if t.get('unit') else '')
-                   + (f" · 필수 열 {t['required']}" if t.get('required') else '') + '\n  행마다 열 이름: 값. 합계 행은 넣지 않는다(자동 계산).')
+                   + (f" · 필수 열 {t['required']}" if t.get('required') else '')
+                   + f"\n  rows의 key는 \"{t['key']}\". 행마다 열 이름: 값. 합계 행은 넣지 않는다(자동 계산).")
     return '\n'.join(out)
+
+
+def _table_rows(rows, t, heading, only):
+    """AI가 돌려준 rows에서 이 표의 행을 찾는다. key가 조금 달라도('표 이용료' · 장 제목) 받아 준다. only = 양식에 표가 하나뿐인가."""
+    rows = rows or {}
+    if t['key'] in rows:
+        return rows[t['key']] or []
+    norm = lambda s: re.sub(r'^표\s*', '', re.sub(r'\s+', '', str(s)))
+    for k, v in rows.items():
+        if norm(k) in (norm(t['key']), norm(heading)):
+            return v or []
+    if only and len(rows) == 1:
+        return next(iter(rows.values())) or []
+    return []
 
 
 def _clean(v):
@@ -52,8 +75,9 @@ def _as_date(v, fmt):
     return checks.fmt_date(*checks.date_parts(m), fmt) or v if m else v
 
 
-def to_blueprint(form, fields, rows, title=None):
-    """칸 값 → 설계도. 값이 없는 필수 칸은 '(확인 필요)'로 둔다."""
+def to_blueprint(form, fields, rows, title=None, keep_empty=False):
+    """칸 값 → 설계도. 값이 없는 필수 칸은 '(확인 필요)'로 둔다.
+    keep_empty: 빈 표 행을 남긴다 — 화면에서 [+ 행]으로 막 넣은 행이 저장되며 사라지지 않게(normalize에서 쓴다)."""
     fields = {str(k).strip(): _clean(v) for k, v in (fields or {}).items()}
     secs = []
     vals = {}
@@ -70,14 +94,16 @@ def to_blueprint(form, fields, rows, title=None):
         tb = None
         t = s.get('table')
         if t:
-            data = (rows or {}).get(t['key']) or []
+            data = _table_rows(rows, t, s.get('heading', ''), len(tables_of(form)) == 1)
             grid = []
-            for r in data:
+            for r in data if isinstance(data, list) else []:
                 r = r if isinstance(r, dict) else dict(zip(t['cols'], r))
                 line = [_clean(r.get(c, '')) for c in t['cols']]
-                if any(line) and '합계' not in line[0].replace(' ', ''):
+                if (any(line) or keep_empty) and '합계' not in line[0].replace(' ', ''):
                     grid.append(line)
-            tb = {'cols': list(t['cols']), 'rows': grid or [[TODO if c in (t.get('required') or []) else '' for c in t['cols']]]}
+            if not any(any(line) for line in grid):          # 값 있는 행이 하나도 없으면 첫 행의 필수 칸에 '(확인 필요)'
+                grid = [[TODO if c in (t.get('required') or []) else '' for c in t['cols']]] + grid[1:]
+            tb = {'cols': list(t['cols']), 'rows': grid}
         secs.append({'heading': s.get('heading', ''), 'items': items, 'table': tb})
     if not title:
         title = re.sub(r'\{(\w+)\}', lambda m: vals.get(m.group(1), ''), form.get('title') or form.get('name') or '문서')
@@ -94,8 +120,9 @@ def _fmt(x):
     return f'{int(x):,}' if x == int(x) else f'{x:,.2f}'.rstrip('0').rstrip('.')
 
 
-def to_values(bp, form):
-    """설계도 → 렌더러에 넘길 values.json. '(확인 필요)'는 인쇄하지 않고 비운다. 기본값·빈 칸 표시·합계를 채운다."""
+def to_values(bp, form, keep_empty=False):
+    """설계도 → 렌더러에 넘길 values.json. '(확인 필요)'는 인쇄하지 않고 비운다. 기본값·빈 칸 표시·합계를 채운다.
+    값이 없는 표 행(빈 칸 표시만 든 행 포함)은 뺀다. keep_empty면 빈 행으로 남긴다(화면 편집 중)."""
     secs = bp.get('sections') or []
     fields, rows = {}, {}
     for i, s in enumerate(form.get('sections') or []):
@@ -117,24 +144,29 @@ def to_values(bp, form):
                     idx = cols.index(c) if c in cols else k
                     v = _clean(r[idx]) if idx < len(r) else ''
                     d[c] = '' if TODO in v else v
-                if not any(d.values()) or '합계' in d[t['cols'][0]].replace(' ', ''):
+                blank = t.get('blank') or {}
+                if '합계' in d[t['cols'][0]].replace(' ', ''):
                     continue
-                for c, mark in (t.get('blank') or {}).items():
+                if not any(v and v != blank.get(c) for c, v in d.items()):
+                    if keep_empty:
+                        out.append({c: '' for c in t['cols']})
+                    continue
+                for c, mark in blank.items():
                     if not d.get(c):
                         d[c] = mark
                 out.append(d)
             rows[t['key']] = out
             sm = t.get('sum')
             if sm:
-                nums = [_num(d.get(sm['col'], '')) for d in out]
+                nums = [_num(d.get(sm['col'], '')) for d in out if any(d.values())]
                 fields[sm['into']] = _fmt(sum(nums)) if nums and all(n is not None for n in nums) else ''
     return {'fields': fields, 'rows': rows}
 
 
 def normalize(bp, form):
     """채팅·직접 수정 뒤에도 장·칸 이름·표 열이 서식과 같게 되돌린다(값만 유지)."""
-    v = to_values(bp, form)
-    made = to_blueprint(form, v['fields'], v['rows'])
+    v = to_values(bp, form, keep_empty=True)      # [+ 행]으로 넣은 빈 행은 남긴다(만들 때 to_values가 뺀다)
+    made = to_blueprint(form, v['fields'], v['rows'], keep_empty=True)
     return made
 
 
