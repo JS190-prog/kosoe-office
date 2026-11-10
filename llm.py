@@ -24,6 +24,28 @@ WRITING_RULES = """코스콤 보고 문법을 지킨다.
 - 날짜는 '2026. 10. 28' 형식.
 - 장마다 항목 2~4개. 하위 설명이 필요하면 children에 1~2개."""
 
+def writing_rules(style=None):
+    """작성 규칙. 스킬에 문체(style)가 없으면 코스콤 보고 문법, 있으면 대표 문서에서 잰 그 문서 종류의 문체."""
+    import checks
+    st = checks.norm_style(style)
+    if st == checks.DEFAULT_STYLE:
+        return WRITING_RULES
+    end = {'noun': "명사형 종결(~함, ~임, ~ 추진, ~ 예정). '~합니다/~다.'로 끝내지 않는다.",
+           'plain': "서술형 평서문으로 끝낸다(~한다. ~이다. ~할 수 있다.). 개조식(~함, ~임)으로 줄이지 않는다.",
+           'polite': "서술형 존댓말로 끝낸다(~합니다. ~입니다.). 개조식(~함, ~임)으로 줄이지 않는다.",
+           'any': '문장 끝 형태는 자료에 적힌 그대로 따른다.'}[st['ending']]
+    length = f"한 항목은 {st['max_len']}자 이내." if st['max_len'] else '길이 제한 없음. 조·항 하나를 한 항목에 온전히 쓴다.'
+    date = '날짜는 자료에 적힌 형식 그대로.' if st['date'] == 'any' else f"날짜는 '{checks.fmt_date(2026, 10, 28, st['date'])}' 형식."
+    return f"""이 문서 종류의 문체를 지킨다(대표 문서에서 잰 기준이며, 보고서용 개조식 문법보다 우선한다).
+- {end}
+- {length}
+- 항목 앞 라벨은 2~6자(예: 기간, 대상). 조·항 번호(①, 1.)는 본문에 그대로 두고 라벨은 빈 문자열로 둔다.
+- 숫자·고유명사·날짜는 사용자 요청과 첨부 자료에 있는 것만 쓴다. 없는 사실은 지어내지 말고 '(확인 필요)'로 둔다.
+- [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.
+- {date}
+- 장(조)마다 항목 1~6개. 원문의 항·호 단위를 따른다."""
+
+
 BP_SCHEMA = '{"title": str, "sections": [{"heading": str, "items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]]} | null}]}'
 
 MASK_RX = {
@@ -481,9 +503,10 @@ def blueprint(template, request_text, files, ctx=None):
     def llm(M):
         fx = '\n'.join(f"- [{f.get('heading')}] {f['text']}" for f in fixed) or '(없음)'
         rules = template.get('rules') or ''
-        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{WRITING_RULES}\n{rules}'
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{writing_rules(template.get("style"))}\n{rules}'
         user = (f"템플릿: {template['name']} ({template['desc']})\n구성(이 순서와 제목을 그대로): {outline}\n"
-                f"고정 문구(그대로 넣는다):\n{fx}\n\n요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
+                f"고정 문구(글자 그대로 넣는다. 그 안에 숫자로 끝나지 않는 [칸 이름]이 있으면 그 칸만 요청·자료의 값으로 바꾸고, 값이 없으면 [칸 이름]을 그대로 둔다):\n{fx}\n\n"
+                f"요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
                 f"첨부에 표가 있으면 가장 맞는 장의 table에 그대로 넣는다(숫자 변경 금지, 필요하면 증감 열만 추가).\n출력 형식: {BP_SCHEMA}")
         out, ms = call_json(sys, user, 3000)
         return _clean_bp(out, outline), ms
@@ -491,7 +514,7 @@ def blueprint(template, request_text, files, ctx=None):
 
 
 # ───────────── 3. 채팅으로 고치기 ─────────────
-def edit(bp, instruction, files, ctx=None):
+def edit(bp, instruction, files, ctx=None, style=None):
     def rule():
         b = json.loads(json.dumps(bp))
         secs = b['sections']
@@ -519,7 +542,7 @@ def edit(bp, instruction, files, ctx=None):
         return {'reply': f"**{tgt['heading']}**에 지시를 메모로 넣었습니다. (규칙 기반 보조 모드 — AI가 연결되면 문장으로 반영합니다)", 'blueprint': b}
 
     def llm(M):
-        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{WRITING_RULES}'
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{writing_rules(style)}'
         user = (f'현재 설계도:\n{M(json.dumps(bp, ensure_ascii=False))}\n\n지시: {M(instruction)}\n\n{_attach_text(files, M)}\n\n'
                 f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA}}}')
         out, ms = call_json(sys, user, 3500)
@@ -528,16 +551,19 @@ def edit(bp, instruction, files, ctx=None):
 
 
 # ───────────── 4. 긴 항목 줄이기(검수 자동 수정) ─────────────
-def shorten(texts, ctx=None):
+def shorten(texts, ctx=None, style=None):
+    import checks
+    n = checks.norm_style(style)['max_len'] or 90
+
     def rule():
         out = []
         for t in texts:
             s = re.split(r'(?:으며|이며|하며|였으며|고,|,)\s', t)[0]
-            out.append(s if len(s) <= 90 else s[:88] + '…')
+            out.append(s if len(s) <= n else s[:n - 2] + '…')
         return out
 
     def llm(M):
-        out, ms = call_json(f'긴 보고서 항목을 90자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{WRITING_RULES}',
+        out, ms = call_json(f'긴 항목을 {n}자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{writing_rules(style)}',
                             f'항목들: {M(json.dumps(texts, ensure_ascii=False))}\n출력 형식: {{"items": [str]}} (같은 개수, 같은 순서)', 1500, fast=True)
         items = out.get('items') or []
         if len(items) != len(texts):
@@ -547,8 +573,8 @@ def shorten(texts, ctx=None):
 
 
 # ───────────── 5. 기존 문서에서 템플릿 추출 ─────────────
-def extract(docs, ctx=None):
-    """docs = [{'name','text','heads'}] → 구성·고정 문구·채울 칸·작성 규칙."""
+def extract(docs, ctx=None, prose=False):
+    """docs = [{'name','text','heads'}] → 구성·고정 문구·채울 칸·작성 규칙. prose=True면 보고서가 아닌 서술형 문서로 분석한다."""
     def rule():
         hints = [d.get('heads') or [] for d in docs]
         base = hints[0] if hints else []
@@ -566,6 +592,11 @@ def extract(docs, ctx=None):
         body = '\n\n'.join(f"=== 문서 {i + 1}: {M(d['name'])} ===\n장 제목 후보: {d.get('heads')}\n{M(d['text'][:5000])}" for i, d in enumerate(docs))
         sys = ('너는 사내 문서 양식 분석가다. 같은 종류의 문서 여러 건에서 공통 구성(목차), 매번 똑같이 들어가는 고정 문구, '
                '문서마다 바뀌는 채울 칸, 작성 규칙을 뽑아 템플릿 초안을 만든다. 개인 이름·연락처·고객사 실명은 예시에서 가린다.')
+        if prose:           # 보고서가 아닌 문서(계약서·공문·규정 등): 그 문서의 구성과 문장이 기준
+            sys += ('\n이 문서는 개조식 보고서가 아니라 서술형 문서(계약서·공문·규정·안내문 등)다. 그 문서의 구성과 문장을 기준으로 분석한다: '
+                    '조·항 제목을 outline으로 삼고, 조항 문장은 고쳐 쓰거나 요약하지 말고 원문 그대로 fixed에 옮긴다.\n'
+                    '고정 문구 안에서 문서마다 바뀌는 값(회사명·날짜·금액·업무명 등)은 지우지 말고 그 자리에 [칸 이름]을 적는다'
+                    '(예: "[고객사명](이하 "갑"이라 한다)", "[기본계약 체결일] 체결한"). 칸 이름은 숫자로 끝내지 않는다.')
         user = (f'{body}\n\n출력 형식: {{"name_suggest": str, "outline": [str], "fixed": [{{"heading": str, "text": str}}], '
                 f'"fields": [{{"name": str, "desc": str, "example": str, "kind": "칸"|"표"}}], "rules": [str]}}')
         out, ms = call_json(sys, user, 2500)

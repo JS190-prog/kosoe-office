@@ -35,14 +35,18 @@ async function vSkills(sync) {
      <td class="small">${chainHtml(s)}</td><td><span class="chip o">${SCOPE_K[s.scope]}</span><br><span class="small muted">${esc(s.org || '')}${s.share === 'corp' ? ' · 전사 공개' : ''}</span></td>
      <td class="small">${s.forms.map(f => fmtTag(f.fmt) + ' ' + esc(f.name)).join('<br>') || '<span class="muted">(상위 공통 규칙)</span>'}</td>
      <td class="small">${s.tags.slice(0, 3).map(t => `<span class="chip n">${esc(t)}</span>`).join(' ')}</td>
-     <td>${s.errors.length ? `<span class="chip bad" title="${esc(s.errors.join('\n'))}">오류 ${s.errors.length}</span>` : '<span class="chip ok">통과</span>'}</td>
+     <td>${s.errors.length ? `<span class="chip bad" title="${esc(s.errors.join('\n'))}">오류 ${s.errors.length}</span>` : '<span class="chip ok">통과</span>'}${forcedChip(s.verification)}</td>
      <td><button class="btn sm ghost">보기</button></td></tr>`).join('')}</table></div>`;
 }
+// 검증 미통과 상태로 강제 등록한 스킬 표시(스킬 파일의 verification)
+const forcedChip = v => v && v.status === 'forced' ? ` <span class="chip bad" title="${esc('미통과: ' + (v.failed || []).join(' / ') + '\n사유: ' + (v.reason || ''))}">검증 미통과 등록</span>` : '';
+const forcedBox = v => v && v.status === 'forced' ? `<div class="out-f small" style="border-color:var(--bad);margin-bottom:10px">⚠️ <b>검증 미통과 상태로 강제 등록된 스킬</b> — ${esc(v.by || '')} · ${esc(v.date || v.t || '')}<br>미통과: ${(v.failed || []).map(esc).join(' / ')}<br>사유: ${esc(v.reason || '')}</div>` : '';
 let SK = null;
 async function openSkill(id) {
   const d = await api('/api/skills/' + encodeURIComponent(id)); SK = d.skill; const s = SK;
   const lv = s.chain;
   modal(`🧩 ${esc(s.name)} <span class="small muted">${esc(s.id)} v${esc(s.version)}</span>`, `
+   ${forcedBox(s.verification)}${s.forms.filter(f => f.style).map(f => `<div class="small" style="margin-bottom:8px">✍️ <b>${esc(f.name)}</b> 문체(대표 문서에서 잼): ${esc(f.style)}</div>`).join('')}
    <div class="inh">${Object.entries(s.corp).map(([k, v]) => `<div class="lv corp"><b>전사</b> ${esc(k)} <code>${esc(v)}</code></div>`).join('')}
      ${lv.map((l, i) => `<div class="lv ${i === lv.length - 1 ? 'me' : ''}"><b>${({org: (l.org || '').includes('/') ? '팀' : '본부', user: '개인'})[l.scope] || ''}</b> ${esc(l.name)} <code>v${esc(l.version)}</code> <span class="small muted">${esc(l.path)}</span></div>`).join('')}</div>
    <div class="grid2" style="margin-top:12px"><div>
@@ -125,6 +129,7 @@ function sbAnaHtml() {
   const a = SB.analysis;
   $('#sbAna').innerHTML = `<h4><span class="chip dark">2</span> 분석 결과 <span class="small muted">${aiMeta(a.meta)}</span></h4>
    <div class="small">기반 전사 양식: <b>${a.base ? esc(a.base.name) + ` (${esc(a.base.id)}, 유사도 ${a.base.similarity})` : '-'}</b> · 상속할 상위 스킬: <b>${a.parent ? esc(a.parent.name) + ' v' + esc(a.parent.version) : '없음(전사 공용 스킬만)'}</b></div>
+   ${a.style ? `<div class="small out-f" style="margin-top:6px">✍️ 문체: <b>${esc(a.style.label)}</b> ${a.style.default ? '<span class="chip">전사 보고 문법 그대로</span>' : '<span class="chip o">이 문서 기준</span>'}<br><span class="muted">${esc(a.style.basis || '')}${a.style.default ? '' : ' — 보고서가 아닌 문서로 보여, 전사 보고 문법 대신 이 문서의 문체로 쓰고 검증합니다.'}</span></div>` : ''}
    <div class="hl-legend small"><span class="hl fixed">고정 문구</span><span class="hl head">공통 목차</span><span class="hl var">바뀌는 칸(숫자·날짜)</span></div>
    ${a.highlights.map(h => `<details class="hl-doc"><summary>📄 ${esc(h.name)}</summary><div class="hl-body">${h.lines.map(l => `<div class="hl ${l.k}">${esc(l.t)}</div>`).join('')}</div></details>`).join('')}`;
 }
@@ -138,7 +143,7 @@ function sbDraftHtml() {
      <div><label class="small">형식</label><select class="in" onchange="SB.draft.forms[0].fmt=this.value;sbYaml()">${Object.entries(FMT).map(([k, v]) => `<option value="${k}" ${k === f.fmt ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
      <div><label class="small">범위</label><input class="in" disabled value="${D.scope === 'user' ? '개인' : esc(D.org)}"></div></div>
    <label class="small">구성(장 제목, 순서대로)</label>${lst(f.outline, 'SB.draft.forms[0].outline', '장 제목')}
-   <label class="small">고정 문구 (글자 그대로 들어감)</label><div class="lst-ed">${D.blocks.map((b, i) => `<div class="li"><input class="in" style="max-width:110px" value="${esc(b.heading)}" placeholder="장" oninput="SB.draft.blocks[${i}].heading=this.value;sbYaml()"><input class="in" value="${esc(b.text)}" oninput="SB.draft.blocks[${i}].text=this.value;sbYaml()"><button class="x" onclick="SB.draft.blocks.splice(${i},1);SB.draft.forms[0].blocks=SB.draft.blocks.map(x=>x.id);sbDraftHtml()">✕</button></div>`).join('')}
+   <label class="small">고정 문구 (글자 그대로 들어감)</label><div class="lst-ed">${D.blocks.map((b, i) => `<div class="li"><input class="in" style="max-width:110px" value="${esc(b.heading)}" placeholder="장" oninput="SB.draft.blocks[${i}].heading=this.value;sbYaml()"><textarea class="in" rows="${Math.min(4, 1 + Math.floor(b.text.length / 70))}" oninput="SB.draft.blocks[${i}].text=this.value;sbYaml()">${esc(b.text)}</textarea><button class="x" onclick="SB.draft.blocks.splice(${i},1);SB.draft.forms[0].blocks=SB.draft.blocks.map(x=>x.id);sbDraftHtml()">✕</button></div>`).join('')}
      <button class="btn ghost sm" onclick="const n='b'+(SB.draft.blocks.length+1);SB.draft.blocks.push({id:n,heading:'',text:''});SB.draft.forms[0].blocks.push(n);sbDraftHtml()">+ 추가</button></div>
    <label class="small">작성 규칙</label>${lst(D.rules, 'SB.draft.rules', '예) 결론을 먼저 쓴다')}
    <label class="small">금지어 (쉼표로)</label><input class="in" value="${esc((D.checks.banned || []).join(', '))}" oninput="SB.draft.checks.banned=this.value.split(',').map(x=>x.trim()).filter(Boolean);sbYaml()">
@@ -159,7 +164,7 @@ function sbEvalIntro() {
 }
 async function sbEvaluate() {
   const d = await busy('검증 과제를 스킬 사용/미사용으로 채점하는 중… (AI 여러 번 호출)', () => api(`/api/skillgen/${SB.job}/evaluate`, {body: {draft: SB.draft}}));
-  SB.report = d.report; SB.draft = d.draft; SB.thumbs = 0; vRegister();
+  SB.report = d.report; SB.draft = d.draft; if (d.analysis) SB.analysis = d.analysis; SB.thumbs = 0; vRegister();
 }
 function sbEvalHtml() {
   const R = SB.report, need = R.criteria.find(c => c.id === 'human').human;
@@ -173,14 +178,33 @@ function sbEvalHtml() {
    <div><div class="kpis" style="grid-template-columns:1fr 1fr;margin:0"><div class="card kpi"><div class="l">스킬 사용</div><div class="v">${R.with_score}<small>/${R.full}</small></div></div><div class="card kpi"><div class="l">스킬 미사용</div><div class="v">${R.without_score}<small>/${R.full}</small></div></div></div>
     ${R.tasks.map((t, i) => `<details class="hl-doc"><summary class="small">과제 ${i + 1} · ${esc(t.doc)} · 구성 ${(t.with.struct * 100).toFixed(0)}% vs ${(t.without.struct * 100).toFixed(0)}% · ${t.mode === 'llm' ? 'AI' : '규칙'}</summary><pre class="code small">${esc(t.memo)}</pre></details>`).join('')}
     <div style="margin-top:10px"><b class="small">사람 확인 — 담당자 시범 작성 ${need}건</b><div class="row wrap" style="margin-top:6px">${Array.from({length: need}, (_, i) => `<button class="btn sm ${i < SB.thumbs ? '' : 'ghost'}" onclick="SB.thumbs=${i + 1};sbEvalHtml()">${i < SB.thumbs ? '👍' : '○'} 시범 ${i + 1}</button>`).join('')}</div></div></div></div>
-   <div class="row" style="margin-top:12px"><button class="btn ghost" onclick="sbEvaluate()">↻ 다시 검증</button>
+   <div class="row wrap" style="margin-top:12px"><button class="btn ghost" onclick="sbEvaluate()">↻ 다시 검증</button>
      <button class="btn o" ${all ? '' : 'disabled'} onclick="sbSubmit()">📮 ⑤ 등록 요청 (브랜치 · PR${SB.draft.scope === 'user' ? ' · 자동 검사 후 병합' : ' · 관리자 승인'})</button>
-     ${all ? '' : '<span class="small muted">모든 기준을 통과해야 열립니다</span>'}</div>`;
+     ${all ? '' : `<span class="small muted">모든 기준을 통과해야 열립니다</span>
+       <button class="btn red" ${R.can_force === false ? 'disabled' : ''} onclick="sbForce()" title="미통과 항목과 사유를 PR·스킬 파일에 남기고 등록합니다">⚠️ 미통과 항목이 있어도 등록</button>
+       ${R.can_force === false ? '<span class="small" style="color:var(--bad)">스킬 파일 검사 오류·보안(개인정보) 미통과는 강제 등록할 수 없습니다</span>' : ''}`}</div>`;
 }
-async function sbSubmit() {
-  const d = await busy('스킬 폴더를 브랜치에 커밋하고 PR을 여는 중…', () => api(`/api/skillgen/${SB.job}/submit`, {body: {thumbs: SB.thumbs}}));
+// 검증 미통과 강제 등록: 미통과 항목을 보여 주고 사유를 받아, PR 본문 · 스킬 파일(verification) · SKILL.md에 남긴다
+function sbForce() {
+  const R = SB.report, need = R.criteria.find(c => c.id === 'human').human;
+  const failed = R.criteria.filter(c => c.id === 'human' ? SB.thumbs < need : !c.pass);
+  modal('⚠️ 검증 미통과 상태로 등록', `
+    <p class="small">아래 기준을 통과하지 못했습니다. 그래도 등록하면 <b>미통과 항목과 사유가 PR · 스킬 파일 · SKILL.md에 남고</b>, 스킬 목록에 「검증 미통과 등록」으로 표시됩니다.${SB.draft.scope === 'user' ? ' 개인 스킬이라 자동 검사(스키마 · 상속 · 잠금 · 보안)만 통과하면 바로 병합됩니다.' : ' 승인권자가 이 내용을 보고 승인 여부를 정합니다.'}</p>
+    ${failed.map(c => `<div class="check"><span class="i no">!</span><span class="grow"><b>${esc(c.name)}</b>${c.detail && c.id !== 'human' ? `<br><span class="small muted">${esc(c.detail)}</span>` : ''}</span></div>`).join('')}
+    <label class="small" style="display:block;margin-top:10px">강제 등록 사유 (5자 이상, 개인정보는 적지 마세요)</label>
+    <textarea class="in" id="sbWhy" rows="2" placeholder="예) 계약서 양식이라 보고 문법 기준이 맞지 않음. 구성과 고정 조항 재현은 확인함"></textarea>
+    <div class="row" style="margin-top:10px"><button class="btn red" onclick="sbSubmit(true)">미통과 상태로 등록 요청</button><button class="btn ghost" onclick="closeModal()">취소</button></div>`);
+}
+async function sbSubmit(force) {
+  const body = {thumbs: SB.thumbs};
+  if (force) {
+    body.force = true; body.reason = ($('#sbWhy')?.value || '').trim();
+    if (body.reason.length < 5) return toast('강제 등록 사유를 5자 이상 적어 주세요', true);
+    closeModal();
+  }
+  const d = await busy('스킬 폴더를 브랜치에 커밋하고 PR을 여는 중…', () => api(`/api/skillgen/${SB.job}/submit`, {body}));
   SB.req = d.request;
-  toast(d.request.stage === 'done' ? '🎉 개인 스킬 등록 완료 — 저장소에 병합·태그, 바로 쓸 수 있습니다' : `PR #${d.request.pr_number} — ${d.request.stage_name} 대기`);
+  toast(d.request.stage === 'done' ? (force ? '⚠️ 검증 미통과 상태로 개인 스킬을 등록했습니다 — 저장소에 병합·태그' : '🎉 개인 스킬 등록 완료 — 저장소에 병합·태그, 바로 쓸 수 있습니다') : `PR #${d.request.pr_number} — ${d.request.stage_name} 대기`);
   SB = {files: [], request: '', scope: 'me', job: null, draft: null, analysis: null, report: null, thumbs: 0, req: null};
   await refreshMe(); vRegister();
 }
@@ -192,7 +216,7 @@ function pipe(r) {
 function reqCard(r) {
   return `<div class="card box" style="margin-bottom:10px"><div class="row sp wrap"><div><span class="chip dark">${esc(r.kind_name)}</span> <b style="font-size:15px">${esc(r.name)}</b> <span class="chip n">v${esc(r.note.version || '')}</span> <span class="chip o">${SCOPE[r.scope]}</span> <span class="small muted">${esc(r.requester_name)} · ${esc(r.created)}</span></div>
     <div class="row">${r.pr_url ? `<a class="btn ghost sm" href="${esc(r.pr_url)}" target="_blank">GitHub PR #${r.pr_number} ↗</a>` : `<span class="chip">🌿 ${esc(r.branch)}</span>`}</div></div>
-    ${pipe(r)}<div class="small muted">양식: ${r.outline.map(esc).join(' · ') || '-'} · 경로 <code>${esc(r.path)}/</code></div>
+    ${pipe(r)}${forcedBox(r.note.report && r.note.report.forced ? {status: 'forced', ...r.note.report.forced} : null)}<div class="small muted">양식: ${r.outline.map(esc).join(' · ') || '-'} · 경로 <code>${esc(r.path)}/</code></div>
     <div style="margin-top:8px">${r.history.map(h => `<div class="ev"><span class="t">${esc(h.t)}</span><span class="grow"><b>${esc(h.who)}</b> ${esc(h.act)}${h.note ? ` — “${esc(h.note)}”` : ''}</span></div>`).join('')}</div>
     ${r.can_decide ? `<div class="row" style="margin-top:10px"><input class="in" id="n-${r.id}" placeholder="의견 (PR 댓글로 남습니다)"><button class="btn" onclick="decide('${r.id}',true)">승인 → 병합·태그</button><button class="btn red" onclick="decide('${r.id}',false)">반려</button></div>` : ''}</div>`;
 }
