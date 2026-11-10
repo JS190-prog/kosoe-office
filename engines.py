@@ -157,9 +157,15 @@ def to_draft(bp):
     for s in bp['sections']:
         if '근거' in s['heading']:
             basis += [it['text'] for it in s['items'] if it['text'].strip() and '확인 필요' not in it['text']]
-        else:
-            secs.append({'heading': s['heading'], **({'text': s['text']} if s.get('text') else {}),
-                         'items': _hwp_items(s, None) or [{'type': 'o', 'text': '(내용 없음)'}]})
+            continue
+        items = _hwp_items(s, None)
+        if not items and not s.get('text'):        # 기안문 양식의 장 8개 중 쓸 내용이 없는 장은 뺀다
+            continue
+        for t in items:                             # 양식의 예산 표: 「합계」 행은 앞 두 칸을 병합
+            if t['type'] == 'table':                # (설계도의 행 목록은 건드리지 않고 새 행으로)
+                t['rows'] = [r[:1] + ['<'] + r[2:] if i and len(r) > 2 and r[0].replace(' ', '') in ('합계', '총계') and not r[1].strip()
+                             else r for i, r in enumerate(t['rows'])]
+        secs.append({'heading': s['heading'], **({'text': s['text']} if s.get('text') else {}), 'items': items})
     rep = {'type': 'draft', 'title': bp['title'], 'basis': basis, 'purpose': bp.get('purpose') or draft_purpose(bp['title']), 'sections': secs}
     for k in ('recipient', 'attachments'):
         if bp.get(k):
@@ -634,7 +640,7 @@ def check(bp, warns=(), style=None, fixed=()):
         out.append({'id': 'end', 'name': checks.ENDINGS[st['ending']], 'ok': not ends,
                     'detail': (f'{len(ends)}개 문장형' if st['ending'] == 'noun' else f'{len(ends)}개 개조식(~함·~임)') if ends else '', 'fix': bool(ends)})
     todo = [it['text'] for it in all_items if '확인 필요' in it['text'] or '반영 예정' in it['text'] or any(s in it['text'] for s in slots)]
-    empty = [s['heading'] for s in bp['sections'] if not s['items'] and not s.get('table')]
+    empty = [s['heading'] for s in bp['sections'] if not s['items'] and not s.get('table') and not s.get('text')]
     return out + [
         {'id': 'empty', 'name': '빈 장 없음', 'ok': not empty, 'detail': ', '.join(empty), 'fix': False},
         {'id': 'todo', 'name': '확인 필요 표시 없음', 'ok': not todo, 'detail': f'{len(todo)}곳 — 직접 확인해 주세요' if todo else '', 'fix': False},
@@ -746,6 +752,15 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
         [{'type': 'table', 'unit': '(단위 : 원, 부가세 별도)', 'rows': [['배정부서', '금액'], ['경영기획부', '1,000']]}]
     assert d2['sections'][1]['items'][0]['children'] == \
         [{'type': 'note', 'text': '관련 근거 : 규정'}, {'type': 'ref', 'text': '참고'}, {'type': 'dash', 'text': '세부'}]
+    # 기안문 양식: 장 8개 중 내용 없는 장은 빼고(장 제목 줄만 있는 장은 남김), 예산 표 「합계」 행은 앞 두 칸 병합(설계도는 그대로)
+    rows = [['총무팀', '비품비', '장비', '1,000'], ['합계', '', '', '1,000']]
+    bp3 = {'title': 'X', 'sections': [{'heading': '추진 일정', 'items': [], 'table': None},
+                                      {'heading': '소요 예산', 'items': [], 'table': None, 'text': '1,000원(부가세 별도)'},
+                                      {'heading': '예산 현황', 'items': [], 'table': {'cols': ['배정부서', '계정과목', '예산적요', '금액'], 'rows': rows}}]}
+    d3 = to_draft(bp3)
+    assert [s['heading'] for s in d3['sections']] == ['소요 예산', '예산 현황'] and d3['sections'][0]['items'] == []
+    assert d3['sections'][1]['items'][0]['rows'][2] == ['합계', '<', '', '1,000'] and rows[1][1] == ''
+    assert [c for c in check(bp3, (), None) if c['id'] == 'empty'][0]['detail'] == '추진 일정'
     det = to_detail({**bp, 'sections': bp['sections'][1:] + [{'heading': '효과', 'items': [{'label': '가', 'text': '1'}, {'label': '나', 'text': '2'}]}]},
                     {'dept': '팀'})
     assert det['chapters'][0]['sections'][0]['style'] == 'box' and det['chapters'][0]['sections'][0]['heading'] == '배경 : a'
