@@ -155,9 +155,8 @@ def to_draft(bp):
     머리 수신자 · 제목과 첨부 목록도 넘긴다. 요청 문장의 추진하는 일은 설계도의 purpose(없으면 제목에서 꼬리를 뗀 것)."""
     basis, secs = [], []
     for s in bp['sections']:
-        if '근거' in s['heading']:                   # 「(확인 필요)」뿐이면 그대로 둬서 「1. 관련 근거 : (확인 필요)」로 채울 자리를 보인다
-            texts = [it['text'] for it in s['items'] if it['text'].strip()]
-            basis += [t for t in texts if '확인 필요' not in t] or texts[:1]
+        if '근거' in s['heading']:                   # 「(확인 필요)」는 근거가 아니다 — 근거가 없으면 렌더러가 번호 없는 한 문장으로 시작
+            basis += [it['text'] for it in s['items'] if it['text'].strip() and '확인 필요' not in it['text']]
             continue
         items = _hwp_items(s, None)
         if not items and not s.get('text'):        # 기안문 양식의 장 8개 중 쓸 내용이 없는 장은 뺀다
@@ -736,7 +735,7 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
         {'heading': '추진 개요', 'items': [{'label': '배경', 'text': 'a', 'children': [{'text': 'b'}]}], 'table': {'cols': ['c'], 'rows': [['1']]}}]}
     d = to_draft(bp)
     assert d['basis'] == ['총무2026-1(2026. 1. 2. : 보고)'] and d['purpose'] == 'X'
-    assert to_draft({'title': 'X', 'sections': [{'heading': '관련 근거', 'items': [{'text': '(확인 필요)'}]}]})['basis'] == ['(확인 필요)']
+    assert to_draft({'title': 'X', 'sections': [{'heading': '관련 근거', 'items': [{'text': '(확인 필요)'}]}]})['basis'] == []
     assert d['sections'][0]['items'][0] == {'type': 'table', 'rows': [['c'], ['1']]}
     assert 'recipient' not in d and d['title'] == 'X 추진'
     # 기안문 작성사례: 머리 수신자 · 제목, 요청 문장의 일(purpose), 첨부 목록, 장 제목 줄 · 표 단위, 각주 * · 참고 ※
