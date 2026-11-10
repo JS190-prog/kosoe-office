@@ -588,7 +588,7 @@ def compose_new():
     bp, meta = llm.blueprint(tl, text, files, ai_ctx())
     if tl.get('form_fields'):
         bp = engines.form_prefill(bp, people_of(g.u))
-    bp = checks.enforce_fixed(bp, J(t['fixed'], []))
+    bp = engines.fix_endings(checks.enforce_fixed(bp, J(t['fixed'], [])), *_style_of(t))
     cid = core.new_id('c')
     info = J(t['skill'], {}) or {}
     who = f" · 스킬 {info['id']}@{info.get('version')}" if info.get('id') else ''
@@ -635,6 +635,7 @@ def compose_chat(cid):
                          '값(text, 표의 칸)만 지시대로 바꾼다. 요청·자료에 없는 값은 지어내지 않는다.' if fill else '')
     if fill:                                    # 칸 이름·표 열이 서식과 같게 되돌린다(값만 유지)
         out['blueprint'] = fillform.normalize(out['blueprint'], fill)
+    out['blueprint'] = engines.fix_endings(out['blueprint'], *_style_of(t))
     chat = J(c['chat'], [])
     chat += [{'who': 'me', 'text': msg, 't': now(), 'files': [f['name'] for f in files]}, {'who': 'ai', 'text': out['reply'], 't': now(), 'meta': meta}]
     bp = out['blueprint']
@@ -1298,6 +1299,14 @@ def _bp_score(bp, form, blocks, memo, allowed='', fixed=()):
     return {'struct': round(struct, 3), 'fixed': fixed_ok, 'lost': lost[:5], 'new': new[:5], 'grammar': [c['name'] for c in gram]}
 
 
+def _polish(bp, style, fixed, ctx, blocks=()):
+    """[검수 자동 수정](doc_fix)과 같은 뒤처리 → (설계도, 고친 항목 수). 줄일 항목이 없으면 AI를 부르지 않는다.
+    doc_fix 처럼 고친 뒤 고정 문구를 다시 맞춘다 — 고정 문구를 이어 붙인 긴 항목을 줄이면 고정 문구가 깨지므로."""
+    out, _ = engines.autofix(bp, lambda xs: llm.shorten(xs, ctx, style), (), style, fixed)
+    n = sum(a['text'] != b['text'] for a, b in zip(engines._all_items(bp), engines._all_items(out)))
+    return (checks.enforce_fixed(out, blocks) if blocks else out), n
+
+
 def _criteria_pass(sc):
     return [sc['struct'] >= 0.95, sc['fixed'], not sc['lost'] and not sc['new'], not sc['grammar']]
 
@@ -1374,14 +1383,19 @@ def skillgen_evaluate(jid):
         with ThreadPoolExecutor(2) as ex:      # 스킬 사용 · 미사용 초안을 동시에 쓴다(차례로 쓰면 검증 시간이 두 배)
             fw, fo = ex.submit(llm.blueprint, with_t, memo, [], ctx), ex.submit(llm.blueprint, without_t, memo, [], ctx)
             (bw, mw), (bo, mo) = fw.result(), fo.result()
-        bw = checks.enforce_fixed(bw, blocks + parent_blocks)
         fx = [x['text'] for x in blocks + parent_blocks] + ((draft.get('checks') or {}).get('required') or [])
         for e in draft.get('extends') or []:      # 상위 스킬의 필수 문구도 글자 그대로 넣는 글
             if str(e).startswith('skill:') and e.split(':', 1)[1] in allsk:
                 fx += skills.resolve(e.split(':', 1)[1], allsk)['checks']['required']
+        # 문서를 만들 때와 같은 결과로 채점한다: 고정 문구를 글자 그대로 넣고 [검수 자동 수정](doc_fix)까지 거친다 —
+        # 종결 · 날짜는 규칙 변환, 문체 길이를 넘는 항목만 AI가 줄인다(숫자를 잃으면 「숫자·사실 보존」에서 잡힌다)
+        with ThreadPoolExecutor(2) as ex:
+            pw = ex.submit(_polish, checks.enforce_fixed(bw, blocks + parent_blocks), form.get('style'), fx, ctx, blocks + parent_blocks)
+            po = ex.submit(_polish, bo, without_t.get('style'), (), ctx)
+            (bw, nw), (bo, _) = pw.result(), po.result()
         allowed = chr(10).join(fx)
         results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo, allowed, fx), 'without': _bp_score(bo, form, blocks, memo, allowed, fx),
-                      'mode': mw['mode'], 'ms': max(mw['ms'], mo['ms'])}
+                      'mode': mw['mode'], 'ms': max(mw['ms'], mo['ms']), 'autofix': nw}
 
     th = [threading.Thread(target=run, args=(i, f)) for i, f in enumerate(files)]
     for t in th:
@@ -1402,7 +1416,8 @@ def skillgen_evaluate(jid):
          'detail': '; '.join(f"빠짐 {t['with']['lost']} 새 숫자 {t['with']['new']}" for t in tasks if t['with']['lost'] or t['with']['new'])},
         {'id': 'grammar', 'name': '보고 문법(3줄·명사형·날짜)' if checks.is_default_style(form.get('style')) else
             f"문체 — 대표 문서 기준({checks.style_label(form.get('style'))})", 'pass': bool(tasks) and all(not t['with']['grammar'] for t in tasks),
-         'detail': '; '.join(', '.join(t['with']['grammar']) for t in tasks if t['with']['grammar'])},
+         'detail': '; '.join(', '.join(t['with']['grammar']) for t in tasks if t['with']['grammar'])
+            or (f"검수 자동 수정 {sum(t.get('autofix', 0) for t in tasks)}건 반영" if any(t.get('autofix') for t in tasks) else '')},
         {'id': 'security', 'name': '보안(실명·연락처·계좌 없음)', 'pass': not pii, 'detail': '; '.join(pii)},
         {'id': 'compare', 'name': '효과 비교(스킬 사용 > 미사용)', 'pass': wsc > osc, 'detail': f'사용 {wsc}/{full} · 미사용 {osc}/{full}'},
         {'id': 'human', 'name': f'사람 확인(시범 작성 {need}건 👍)', 'pass': False, 'detail': '아래에서 확인', 'human': need},
@@ -1432,7 +1447,8 @@ def _skill_md(d, analysis):
             f"# {d['name']}\n\n- 상속: {', '.join(d['extends'])}. 전사 지침은 그대로 따르고 아래만 덧붙인다.\n"
             f"- 기반 양식: {base.get('name', '-')} (유사도 {base.get('similarity', '-')})\n- 형식: {FMT[form['fmt']]}\n{style}"
             f"- 구성(이 순서와 제목 그대로): {' → '.join(form['outline'])}\n\n## 고정 문구(글자 그대로)\n{blocks}\n\n## 작성 규칙\n{rules}\n\n"
-            f"## 검증\n대표 문서에서 만든 과제(메모 → 기대 구성·고정 문구·숫자)로 스킬 사용/미사용을 채점했다. `evals/`에는 기대 구성과 채점 결과만 있다. "
+            f"## 검증\n대표 문서에서 만든 과제(메모 → 기대 구성·고정 문구·숫자)로 스킬 사용/미사용을 채점했다. "
+            f"초안은 문서를 만들 때처럼 검수 자동 수정(종결 · 날짜 규칙 변환, 긴 항목 줄이기)을 거친 뒤 채점했다. `evals/`에는 기대 구성과 채점 결과만 있다. "
             f"대표 문서 파일과 과제 메모(대표 문서에서 뽑은 줄)는 저장소에 올리지 않았다.\n{forced}")
 
 

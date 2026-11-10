@@ -598,6 +598,29 @@ ENDS_POLITE = [('하였음', '하였습니다'), ('되었음', '되었습니다'
                ('됨', '됩니다'), ('임', '입니다')]
 
 
+def _noun_end(t):
+    """문장형 끝(~합니다 · ~한다 · ~이다 …) → 개조식(~함 · ~임). 동사 어미만 바꾸므로 뜻은 그대로다."""
+    t = t.strip().rstrip('.')
+    for a, z in ENDS:
+        if t.endswith(a):
+            return t[: -len(a)] + z
+    return t
+
+
+def fix_endings(bp, style=None, fixed=()):
+    """AI가 쓴 설계도를 명사형 문체(개조식)에 맞춘다 — 지침을 줘도 AI가 가끔 「~고자 합니다」처럼 끝내는 항목이 있어서.
+    검수 자동 수정과 같은 규칙 변환(AI 호출 없음). 고정 문구 · 필수 문구는 글자 그대로 둔다.
+    서술형 문체로 되돌리는 변환은 「포함 · 책임」 같은 명사를 잘못 바꿀 수 있어 여기서는 하지 않는다(검수 자동 수정에서만)."""
+    if checks.norm_style(style)['ending'] != 'noun':
+        return bp
+    fixed = [str(f).strip() for f in fixed if str(f).strip()]
+    b = json.loads(json.dumps(bp))
+    for it in _all_items(b):        # 고정 문구가 들어 있는 항목(AI가 다른 글과 이어 붙인 것 포함)은 손대지 않는다
+        if BAD_END.search(it['text'].strip()) and not any(checks.fixed_present(f, it['text']) for f in fixed):
+            it['text'] = _noun_end(it['text'])
+    return b
+
+
 def autofix(bp, shorten_fn, warns=(), style=None, fixed=()):
     st = checks.norm_style(style)
     fixed = [str(f) for f in fixed]
@@ -609,11 +632,7 @@ def autofix(bp, shorten_fn, warns=(), style=None, fixed=()):
             t = DATE_RX.sub(lambda m: m.group(0) if checks.date_ok(m, st['date']) else checks.fmt_date(*checks.date_parts(m), st['date']), t)
         t = t.strip()
         if st['ending'] == 'noun':
-            t = t.rstrip('.')
-            for a, z in ENDS:
-                if t.endswith(a):
-                    t = t[: -len(a)] + z
-                    break
+            t = _noun_end(t)
         elif st['ending'] in ('plain', 'polite'):
             core = t.rstrip('.')
             for a, z in (ENDS_PLAIN if st['ending'] == 'plain' else ENDS_POLITE):
@@ -663,6 +682,17 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
                     {'dept': '팀'})
     assert det['chapters'][0]['sections'][0]['style'] == 'box' and det['chapters'][0]['sections'][0]['heading'] == '배경 : a'
     assert [s['heading'] for s in det['chapters'][1]['sections']] == ['가', '나'] and det['hq'] == '팀'
+    # 명사형 문체: AI가 문장형으로 끝낸 항목만 개조식으로, 고정 문구 · 다른 문체는 그대로
+    fx = '본 자료는 참고용이며 책임지지 않습니다.'
+    bp = {'title': 't', 'sections': [{'heading': 'h', 'table': None, 'items': [
+        {'label': '', 'text': '시범 운영을 추진하고자 합니다.', 'children': [{'text': '예산은 3억원이다'}]},
+        {'label': '', 'text': '부가세 포함', 'children': []}, {'label': '', 'text': fx, 'children': []},
+        {'label': '', 'text': '세부 내용은 붙임 참조. ' + fx, 'children': []}]}]}
+    out = fix_endings(bp, None, [fx])
+    assert [it['text'] for it in _all_items(out)] == ['시범 운영을 추진하고자 함', '예산은 3억원임', '부가세 포함', fx, '세부 내용은 붙임 참조. ' + fx]
+    assert bp['sections'][0]['items'][0]['text'].endswith('합니다.')                       # 원본은 그대로(복사본을 고침)
+    assert [c['detail'] for c in check(out, (), None, [fx]) if c['id'] == 'end'] == ['1개 문장형']    # 고정 문구를 이어 붙인 항목만 남는다
+    assert fix_endings(bp, {'ending': 'plain'}) is bp and fix_endings(bp, {'ending': 'any'}) is bp
     print('engines selftest OK')
 
 

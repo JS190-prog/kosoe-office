@@ -274,7 +274,7 @@ def _biz_run(exe, prompt, conf):
 def _biz_conf(deep=False):
     """BizCoder 설정: 도구는 모두 막고 모델의 '생각(추론)' 수준(KOSOE_BIZCODER_REASONING)을 준다.
     BizCoder에 이 모델의 --variant 가 없어 공급자 옵션으로 준다. default 면 옵션 없이 모델 기본(가장 느림).
-    deep(대표 문서 분석): 생각을 끄거나 낮추면 스킬 초안이 거칠어져 그 뒤 검증이 자주 떨어진다(실측) → off · low 여도 모델 기본으로 둔다."""
+    deep(대표 문서 분석 · 긴 항목 줄이기): 생각을 끄거나 낮추면 스킬 초안이 거칠어지고 줄인 길이가 기준을 넘는다(실측) → off · low 여도 모델 기본으로 둔다."""
     level = CFG['bizcoder_reasoning']
     effort = None if deep and level in ('off', 'low') else {'off': 'none', 'low': 'low', 'medium': 'medium', 'high': 'high'}.get(level)
     return {**BIZ_TOOLS_OFF, **({'provider': {'bizrouter': {'models': {BIZ_MODEL.partition('/')[2]: {'options': {'reasoning': {'effort': effort}}}}}}} if effort else {})}
@@ -847,14 +847,28 @@ def shorten(texts, ctx=None, style=None):
             out.append(s if len(s) <= n else s[:n - 2] + '…')
         return out
 
-    def llm(M):
-        out, ms = call_json(f'긴 항목을 {n}자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{writing_rules(style)}',
-                            f'항목들: {M(json.dumps(texts, ensure_ascii=False))}\n출력 형식: {{"items": [str]}} (같은 개수, 같은 순서)', 1500, fast=True)
+    def ask(M, xs, limit):
+        out, ms = call_json(f'긴 항목을 {limit}자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{writing_rules(style)}',
+                            f'항목들: {M(json.dumps(xs, ensure_ascii=False))}\n출력 형식: {{"items": [str]}} (같은 개수, 같은 순서)', 1500, fast=True)
         items = out.get('items') or []
-        if len(items) != len(texts):
+        if len(items) != len(xs):
             raise RuntimeError('개수 불일치')
         return [str(x) for x in items], ms
-    return _try(ctx, llm, rule)
+
+    def llm(M):
+        out, ms = ask(M, texts, n)
+        for k in (0.75, 0.6):   # AI는 글자 수를 정확히 세지 못해 기준을 넘겨 줄이기도 한다(실측 90자 → 96·98·106자) — 넘친 것만 더 짧은 목표로 다시
+            over = [i for i, s in enumerate(out) if len(s) > n]
+            if not over:
+                break
+            again, ms2 = ask(M, [out[i] for i in over], int(n * k))
+            for i, s in zip(over, again):
+                if len(s) < len(out[i]):
+                    out[i] = s
+            ms += ms2
+        return out, ms
+    # 글자 수를 맞추는 일이라 생각을 켠다(_biz_conf deep) — BizCoder 생각 끔으로는 90자 목표에 96~106자가 나왔다(실측, 켜면 6/6 이내)
+    return _try({**(ctx or {}), 'deep': True}, llm, rule)
 
 
 # ───────────── 5. 기존 문서에서 템플릿 추출 ─────────────
@@ -937,4 +951,14 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
     with ThreadPoolExecutor(8) as ex:
         out = list(ex.map(mk.mask, src))
     assert len(mk.map) == 7 and mk.unmask(out) == src and not any('010-' in o for o in out)
+    # 줄이기: 기준(90자)을 넘겨 줄인 항목만 더 짧은 목표로 한 번 더, 이미 맞는 항목은 그대로
+    asks, available = [], (lambda: True)
+
+    def call_json(system, user, max_tokens=2500, fast=False):        # noqa: F811
+        lim = int(re.search(r'(\d+)자 이내 한 문장', system).group(1))
+        xs = json.loads(user.split('항목들: ', 1)[1].split('\n', 1)[0])
+        asks.append((lim, len(xs)))
+        return {'items': [('가' * 96 if i == 0 else '나' * 80) if lim == 90 else '라' * 95 if lim == 67 else '다' * 50 for i in range(len(xs))]}, 10
+    out, meta = shorten(['x' * 120, 'y' * 130], {'use_llm': True})
+    assert meta['mode'] == 'llm' and asks == [(90, 2), (67, 1), (54, 1)] and out == ['다' * 50, '나' * 80], (asks, out)
     print('llm selftest OK')

@@ -91,7 +91,7 @@ def sample_bp(t):
             if it['label'] in engines.FORM_ME:
                 it['text'] = ''
         bp = engines.form_prefill(bp, PEOPLE)
-    bp = checks.enforce_fixed(bp, json.loads(t['fixed'] or '[]'))
+    bp = engines.fix_endings(checks.enforce_fixed(bp, json.loads(t['fixed'] or '[]')), *app._style_of(t))
     return {'request': req, 'model': meta['model'], 'made': core.today_kr(), 'blueprint': bp}
 
 
