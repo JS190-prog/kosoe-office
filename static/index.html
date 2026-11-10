@@ -83,6 +83,15 @@ textarea.in{resize:vertical;min-height:40px}
 .fmt{font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;color:#fff}
 .fmt.hwp{background:#2f74c0}.fmt.ppt{background:#d24726}.fmt.web{background:#1f7a4d}
 .rec{display:flex;gap:14px;align-items:center;padding:14px 16px;background:var(--nt);border:1px solid #d3e2f3;border-radius:12px;margin-top:14px}
+/* 양식 샘플 · 사내 LLM 고르기 */
+.smp{display:grid;gap:10px}
+.smp .big{display:block;max-width:100%;max-height:calc(90vh - 330px);margin:0 auto;border:1px solid var(--g);border-radius:10px;background:#fff}
+.smp .thumbs{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.smp .thumbs img{height:78px;border:2px solid var(--g);border-radius:6px;cursor:pointer;background:#fff;flex:none}
+.smp .thumbs img.on{border-color:var(--o)}
+.llm-op{display:flex;gap:12px;align-items:center;width:100%;text-align:left;padding:12px 14px;border:1px solid var(--g);border-radius:12px;background:#fff;margin-bottom:8px}
+.llm-op:hover:not(:disabled){border-color:var(--n2)}.llm-op.on{border:2px solid var(--o);padding:11px 13px;background:#fffaf6}
+.llm-op:disabled{opacity:.55;cursor:not-allowed}
 /* 작업 화면 */
 .ws{display:grid;grid-template-columns:330px 1fr 300px;gap:14px;height:calc(100vh - 58px - 150px)}
 .panel{display:flex;flex-direction:column;min-height:0}
@@ -215,7 +224,7 @@ function closeModal() { $('#modal').classList.add('hide'); $('#mb').innerHTML = 
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
 async function busy(text, fn) {
   const b = document.createElement('div'); b.className = 'busy';
-  const ai = /AI|초안|추천|추출|양식|고치는|템플릿을 찾/.test(text) && ME?.ai?.connected;
+  const ai = /AI|초안|추천|추출|양식|고치는|템플릿을 찾/.test(text) && ME?.ai && aiOn();
   b.innerHTML = `<div class="b"><img src="/static/kosoe.webp" alt=""><span>${esc(text)}<br><span class="small muted" style="font-weight:500"><span id="bsec">0</span>초${ai ? ' · AI가 쓰는 중 — 보통 15~45초' : ''}</span></span></div>`;
   document.body.appendChild(b);
   const t0 = Date.now(), iv = setInterval(() => { const e = b.querySelector('#bsec'); if (e) e.textContent = Math.round((Date.now() - t0) / 1000); }, 500);
@@ -270,10 +279,32 @@ function renderTop() {
    </div>
    <span class="small muted">${inet ? `인터넷 승인 ~${inet.until}` : '인터넷망: 승인 필요'}</span>
    <span class="grow"></span>
-   <span class="chip ${ME.ai.connected ? 'n' : 'o'}" title="${esc(ME.ai.detail || 'AI 상태')}">${ME.ai.connected ? (ME.net === 'internet' ? '🤖 ' + esc(ME.ai.model) + ' · 마스킹' : '🤖 사내 LLM 자리 (시연: ' + esc(ME.ai.model) + ')') : '⚙️ 규칙 기반 보조 모드 — ' + esc(ME.ai.detail || '')}</span>
+   ${aiChip()}
    <span class="chip" title="스킬 저장소 ${esc(ME.repo.url || '')} ${esc(ME.repo.error || '')}" onclick="go('skills')" style="cursor:pointer">${ME.repo.mode === 'github' ? '🧩 스킬 저장소 ' + esc(ME.repo.head) : ME.repo.mode === 'local' ? '📁 로컬 스킬 저장소' : '… 스킬 저장소'}</span>
    <button class="row" onclick="logout()" title="사용자 바꾸기"><span class="av" style="width:32px;height:32px;background:${u.color};font-size:13px">${esc(u.name[0])}</span>
      <span style="text-align:left;line-height:1.25"><b>${esc(u.name)} ${esc(u.title)}</b><br><span class="small muted">${esc(u.team)} · ${esc(u.role_name)}</span></span></button>`;
+}
+// 지금 망에서 AI를 쓰는지: 인터넷망 = 외부 AI, 폐쇄망 = 고른 사내 LLM(규칙 기반이면 아님)
+const aiOn = () => { const a = ME.ai; return ME.net === 'internet' ? a.connected : a.closed === 'rule' ? false : a.closed === 'bizcoder' ? a.closed_ready : a.connected; };
+function aiChip() {
+  const a = ME.ai, ok = aiOn();
+  const t = ME.net === 'internet' ? (ok ? '🤖 ' + esc(a.model) + ' · 마스킹' : '⚙️ 규칙 기반 보조 모드 — ' + esc(a.detail || ''))
+    : a.closed === 'rule' ? '⚙️ 사내 LLM 없음 — 규칙 기반'
+    : a.closed === 'bizcoder' ? (ok ? '🤖 사내 LLM · ' + esc(a.closed_label) : '⚠ ' + esc(a.closed_label) + ' 연결 안 됨 — ' + esc(a.closed_detail))
+    : ok ? '🤖 사내 LLM 자리 (시연: ' + esc(a.model) + ')' : '⚙️ 규칙 기반 보조 모드 — ' + esc(a.detail || '');
+  return `<span class="chip ${ok ? 'n' : 'o'}" title="눌러서 사내 LLM 고르기" onclick="pickLLM()" style="cursor:pointer">${t} ▾</span>`;
+}
+async function pickLLM() {
+  const d = await busy('사내 LLM 연결을 확인하는 중…', () => api('/api/ai/closed'));
+  modal('사내 LLM 고르기 <span class="small muted">폐쇄망에서 내 초안·수정에 쓰는 모델 (나에게만 적용)</span>', `
+    ${d.options.map(o => `<button class="llm-op ${o.id === d.choice ? 'on' : ''}" onclick="setLLM('${o.id}')" ${o.ready || o.id === d.choice ? '' : 'disabled'}>
+      <span class="grow"><b>${esc(o.label)}</b><br><span class="small muted">${esc(o.desc)}</span></span>
+      <span class="chip ${o.ready ? 'ok' : 'o'}">${o.id === d.choice ? '사용 중' : o.ready ? '고르기' : '연결 안 됨'}</span></button>`).join('')}
+    <p class="small muted" style="margin-top:6px">인터넷망에서는 외부 AI를 마스킹해서 씁니다. 여기서 고른 모델은 폐쇄망 문서 작성(초안·채팅 수정·검수 자동 수정)에 쓰입니다.</p>`);
+}
+async function setLLM(id) {
+  await busy('사내 LLM을 바꾸는 중…', () => api('/api/ai/closed', {body: {choice: id}}));
+  closeModal(); toast('사내 LLM을 바꿨습니다'); await refreshMe();
 }
 const NAV = [
   ['new', '✍️', '새 문서'], ['docs', '🗂️', '문서함'], ['templates', '📐', '양식'], ['skills', '🧩', '스킬'], ['register', '★', '스킬 만들기'],
@@ -322,18 +353,33 @@ async function vNew() {
   renderAtt(); if (PICK) selTpl(PICK);
 }
 function tplCard(t) {
-  return `<div class="card tpl ${t.usable ? '' : 'dis'}" id="t-${t.id}" onclick="${t.usable ? `selTpl('${t.id}')` : `toast('${esc(t.blocked || '사용 권한이 없습니다')}',true)`}" title="${esc(t.blocked)}">
+  return `<div class="card tpl ${t.usable ? '' : 'dis'}" id="t-${t.id}" onclick="${t.usable ? `pickTpl('${t.id}')` : `toast('${esc(t.blocked || '사용 권한이 없습니다')}',true)`}" title="${esc(t.blocked)}">
     <div class="row sp"><div class="row">${fmtTag(t.fmt)}<span class="chip ${t.scope === 'corp' ? '' : 'o'}">${SCOPE[t.scope]}${t.team ? ' · ' + esc(t.team) : t.dept ? ' · ' + esc(t.dept) : ''}</span></div>${gradeTag(t.grade)}</div>
     <b style="font-size:15px">${esc(t.name)}</b>
     <div class="small muted">${esc(t.desc)}</div>
     <div class="ol">${t.outline.map(esc).join(' › ')}</div>
-    <div class="row sp small muted"><span>🧩 ${esc(t.skill)}</span><span>사용 ${t.uses}회</span></div>
+    <div class="row sp small muted"><span>🧩 ${esc(t.skill)}</span><span>${t.samples?.files.length ? `🖼 샘플 ${t.samples.files.length}장 · ` : ''}사용 ${t.uses}회</span></div>
     ${t.blocked ? `<div class="small" style="color:var(--bad)">⛔ ${esc(t.blocked)}</div>` : ''}</div>`;
 }
 function selTpl(id) {
   PICK = id; document.querySelectorAll('.tpl').forEach(e => e.classList.toggle('sel', e.id === 't-' + id));
   const g = $('#go'); if (g) { g.disabled = false; const t = TPLS.find(x => x.id === id); g.textContent = `${t ? t.name : ''} 초안 만들기 →`; }
 }
+function pickTpl(id) { selTpl(id); showSample(id); }
+function showSample(id) {
+  const t = TPLS.find(x => x.id === id), s = t?.samples;
+  if (!t) return;
+  const url = f => `/api/samples/${encodeURIComponent(s.src)}/${encodeURIComponent(f)}`;
+  const foot = `<p class="small muted" style="margin:10px 0 0">${esc(t.desc)} · 구성 ${t.outline.map(esc).join(' › ')}</p>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn ghost" onclick="closeModal()">닫기</button><button class="btn o" onclick="useTpl()">이 양식으로 시작 →</button></div>`;
+  modal(`${fmtTag(t.fmt)} ${esc(t.name)} <span class="small muted">샘플${s?.from ? ` · 비슷한 전사 양식 「${esc(s.from)}」의 모양` : ''}</span>`,
+    !s?.files.length ? `<div class="empty"><img src="/static/kosoe.webp" alt=""><p>이 양식은 아직 샘플 그림이 없습니다.</p></div>${foot}` : `
+    <div class="smp"><img class="big" id="smp-big" src="${url(s.files[0])}" alt="샘플 1쪽">
+      ${s.files.length > 1 ? `<div class="thumbs">${s.files.map((f, i) => `<img src="${url(f)}" class="${i ? '' : 'on'}" alt="샘플 ${i + 1}" onclick="smpGo(this)">`).join('')}</div>` : ''}</div>
+    <p class="small muted" style="margin:8px 0 0">가상의 표본 내용으로 만든 예시입니다. 실제 문서는 요청과 첨부 자료로 채워집니다.</p>${foot}`, t.fmt !== 'hwp');
+}
+function smpGo(img) { $('#smp-big').src = img.src; img.parentNode.querySelectorAll('img').forEach(i => i.classList.toggle('on', i === img)); }
+function useTpl() { closeModal(); $('#main').scrollTo({top: 0, behavior: 'smooth'}); setTimeout(() => $('#req')?.focus(), 250); }
 function pickFile(cb, multi) {
   const i = document.createElement('input'); i.type = 'file'; i.multiple = !!multi;
   i.accept = '.xlsx,.xlsm,.pptx,.docx,.pdf,.hwp,.html,.csv,.txt,.md,.pia';

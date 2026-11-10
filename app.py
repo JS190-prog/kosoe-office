@@ -91,22 +91,39 @@ def J(s, d=None):
         return d
 
 
+# 폐쇄망에서 쓰는 사내 LLM — 화면(🤖 표시)에서 고르면 사용자마다 policy 표의 closed_llm:<사용자 id> 에 남고, 없으면 .env 의 KOSOE_CLOSED_LLM
+CLOSED = {'same': 'Claude 구독 CLI (시연)', 'bizcoder': f"BizCoder · {CFG['bizcoder_label']}", 'rule': '규칙 기반 (AI 없음)'}
+
+
+def closed_choice():
+    u = g.get('u')          # 로그인 없이 부르는 /api/health 에서는 .env 기본값
+    r = u and row(g.con, 'select v from policy where k=?', 'closed_llm:' + u['id'])
+    v = r['v'] if r else CFG['closed_llm']
+    return v if v in CLOSED else 'same'
+
+
 def ai_ctx(fast=False):
-    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 사내 모델 자리(시연: 같은 구독 CLI 또는 규칙)."""
+    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 고른 사내 LLM(BizCoder · 시연용 구독 CLI · 규칙)."""
     if g.net == 'internet':
         pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
         return {'use_llm': True, 'label': f"{llm.display()} (인터넷망 · 마스킹)", 'mk': llm.Masker(pol), 'fast': fast}
-    if CFG['closed_llm'] == 'rule':
+    c = closed_choice()
+    if c == 'rule':
         return {'use_llm': False}
+    if c == 'bizcoder':
+        return {'use_llm': True, 'label': f"사내 LLM · {CLOSED['bizcoder']}", 'mk': None, 'fast': fast, 'provider': 'bizcoder'}
     return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
 
 
 def ai_state():
+    c = closed_choice()
+    biz = llm.bizcoder_status() if c == 'bizcoder' else {}
+    closed = {'closed': c, 'closed_label': CLOSED[c], 'closed_ready': biz.get('ready', True), 'closed_detail': biz.get('detail', '')}
     if CFG['llm_kind'] == 'claude_cli':
         st = llm.cli_status()
-        return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'closed': CFG['closed_llm'], 'detail': st['detail']}
-    return {'connected': llm.available(), 'model': llm.display(), 'kind': CFG['llm_kind'], 'closed': CFG['closed_llm'],
-            'detail': '' if llm.available() else 'KOSOE_LLM_API_KEY 없음'}
+        return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'detail': st['detail'], **closed}
+    return {'connected': llm.available(), 'model': llm.display(), 'kind': CFG['llm_kind'],
+            'detail': '' if llm.available() else 'KOSOE_LLM_API_KEY 없음', **closed}
 
 
 def people_of(u):
@@ -156,14 +173,42 @@ def tpl_view(t, u):
     return o
 
 
+SAMPLE_EXT = ('.webp', '.png', '.jpg', '.jpeg', '.svg')
+
+
+def _sample_dir(t):
+    """양식 카드의 샘플 그림 폴더(스킬 저장소): 전사 양식 = registry/samples/<id>/, 스킬 양식 = 그 스킬 폴더의 samples/<양식 id>/."""
+    if t['path'] == 'registry/corp.forms.yaml':
+        return os.path.join(skills.REPO, 'registry', 'samples', t['id'])
+    return os.path.join(skills.REPO, *t['path'].split('/'), 'samples', t['id'].split(':', 1)[-1])
+
+
+def _sample_files(d):
+    return sorted(f for f in os.listdir(d) if f.lower().endswith(SAMPLE_EXT)) if os.path.isdir(d) else []
+
+
+def samples_of(t, corp):
+    """카드를 누르면 보일 샘플: 자기 샘플 → 같은 형식·서식(preset)의 전사 샘플 → 같은 형식의 다른 전사 샘플.
+    돌려주는 값 {'src': 그림을 가진 양식 id, 'from': 빌려 온 전사 양식 이름(자기 것이면 ''), 'files': [...]}"""
+    fs = _sample_files(_sample_dir(t))
+    if fs:
+        return {'src': t['id'], 'from': '', 'files': fs}
+    for c in sorted((c for c in corp if c['fmt'] == t['fmt'] and c['id'] != t['id']), key=lambda c: c['preset'] != t['preset']):
+        fs = _sample_files(_sample_dir(c))
+        if fs:
+            return {'src': c['id'], 'from': c['name'], 'files': fs}
+    return {'src': t['id'], 'from': '', 'files': []}
+
+
+def _visible(t, u):
+    return (t['scope'] == 'corp' or u['role'] == 'corpAdmin' or (t['scope'] == 'dept' and t['dept'] == u['dept'])
+            or (t['scope'] == 'team' and t['team'] == u['team']) or (t['scope'] == 'me' and t['owner'] == u['id']))
+
+
 def visible_templates(u):
-    out = []
-    for t in rows(g.con, 'select * from templates order by uses desc, scope desc'):
-        vis = (t['scope'] == 'corp' or u['role'] == 'corpAdmin' or (t['scope'] == 'dept' and t['dept'] == u['dept'])
-               or (t['scope'] == 'team' and t['team'] == u['team']) or (t['scope'] == 'me' and t['owner'] == u['id']))
-        if vis:
-            out.append(tpl_view(t, u))
-    return out
+    allt = rows(g.con, 'select * from templates order by uses desc, scope desc')
+    corp = [t for t in allt if t['path'] == 'registry/corp.forms.yaml']
+    return [{**tpl_view(t, u), 'samples': samples_of(t, corp)} for t in allt if _visible(t, u)]
 
 
 def template_for_render(t):
@@ -301,6 +346,31 @@ def me():
               repo={'mode': skills.STATE['mode'], 'url': skills.STATE['url'], 'head': skills.STATE['head'][:7], 'error': skills.STATE['error']})
 
 
+@app.get('/api/ai/closed')
+@login_required
+def closed_llm_get():
+    """사내 LLM 고르기 화면: 선택지와 지금 쓸 수 있는지(BizCoder 로그인·구독 CLI 로그인)."""
+    biz = llm.bizcoder_status(force=True)
+    return ok(choice=closed_choice(), options=[
+        {'id': 'bizcoder', 'label': CLOSED['bizcoder'], 'ready': biz['ready'],
+         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {CFG['bizcoder_model']} · {biz['detail']}"},
+        {'id': 'same', 'label': CLOSED['same'], 'ready': llm.available(), 'desc': f"{llm.display()} — 사내 LLM 자리를 대신하는 시연용"},
+        {'id': 'rule', 'label': CLOSED['rule'], 'ready': True, 'desc': 'AI 없이 규칙 기반 보조로만 초안을 만듭니다'}])
+
+
+@app.post('/api/ai/closed')
+@login_required
+def closed_llm_set():
+    v = (request.json or {}).get('choice')
+    if v not in CLOSED:
+        return err('알 수 없는 선택입니다')
+    if v == 'bizcoder' and not llm.bizcoder_status(force=True)['ready']:
+        return err('BizCoder를 쓸 수 없습니다: ' + llm.bizcoder_status()['detail'])
+    g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('closed_llm:' + g.u['id'], v))
+    log(g.u['name'], f'사내 LLM 선택 → {CLOSED[v]}')
+    return ok(ai=ai_state())
+
+
 @app.post('/api/net')
 @login_required
 def set_net():
@@ -323,6 +393,18 @@ def health():
 @login_required
 def templates():
     return ok(templates=visible_templates(g.u))
+
+
+@app.get('/api/samples/<tid>/<name>')
+@login_required
+def template_sample(tid, name):
+    """양식 카드 샘플 그림(스킬 저장소의 그 양식 샘플 폴더 안 파일만)."""
+    t = row(g.con, 'select * from templates where id=?', tid)
+    if not t or not _visible(t, g.u) or name not in _sample_files(_sample_dir(t)):
+        abort(404)
+    r = send_from_directory(_sample_dir(t), name)
+    r.headers['Cache-Control'] = 'max-age=3600'
+    return r
 
 
 @app.post('/api/route')

@@ -6,10 +6,12 @@ ctx = {'use_llm': bool, 'label': 화면 표시용 모델 이름, 'mk': Masker | 
 import glob
 import json
 import os
+import platform
 import re
 import shutil
 import ssl
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -174,6 +176,78 @@ def _call_cli(system, user, model=None):
     return d.get('result') or ''
 
 
+# ───────────── BizCoder CLI(사내 LLM) ─────────────
+# 회사 계정으로 로그인된 BizCoder(opencode 계열 코딩 에이전트)로 사내 모델(기본 DeepSeek V4 Flash)을 부른다.
+# Claude Code·Codex 이어받기(MCP·스킬·지침)·프로젝트 설정·자동 업데이트를 끄고 도구를 모두 막은 채, 빈 작업 폴더에서
+# 요청을 표준입력으로 넘겨 순수한 '모델 호출'로만 쓴다 — 첨부 속 글이 도구(명령·파일)를 부르지 못하게.
+BIZ_DIR = os.path.join(DATA, 'llm-bizcoder')
+os.makedirs(BIZ_DIR, exist_ok=True)
+BIZ_ENV = {'OPENCODE_DISABLE_CLAUDE_CODE': '1', 'OPENCODE_DISABLE_CODEX': '1', 'BIZCODER_DISABLE_CLAUDE_CODE': '1',
+           'BIZCODER_DISABLE_CODEX': '1', 'OPENCODE_DISABLE_CLAUDE_CODE_PROMPT': '1', 'OPENCODE_DISABLE_CODEX_PROMPT': '1',
+           'OPENCODE_DISABLE_CLAUDE_CODE_MEMORY': '1', 'OPENCODE_DISABLE_CODEX_SKILLS': '1', 'OPENCODE_DISABLE_PROJECT_CONFIG': '1',
+           'OPENCODE_DISABLE_AUTOUPDATE': '1', 'BIZCODER_DISABLE_WORKFLOWS': '1', 'OPENCODE_PURE': '1',
+           'OPENCODE_CONFIG_CONTENT': json.dumps({'tools': {'*': False}})}
+_biz = {'p': None, 't': 0, 'v': None}
+
+
+def bizcoder_path():
+    """KOSOE_BIZCODER_CLI → npm 전역 bizcoder 패키지 안의 실행 파일(bizcoder-<os>-<arch>) → PATH 의 bizcoder."""
+    if CFG.get('bizcoder_cli'):
+        return CFG['bizcoder_cli']
+    if _biz['p'] is None:
+        shim = (shutil.which('bizcoder.cmd') if os.name == 'nt' else None) or shutil.which('bizcoder') or ''
+        plat = {'win32': 'windows'}.get(sys.platform, sys.platform)
+        arch = {'amd64': 'x64', 'x86_64': 'x64', 'aarch64': 'arm64'}.get(platform.machine().lower(), platform.machine().lower())
+        exe = os.path.join(os.path.dirname(shim), 'node_modules', 'bizcoder', 'node_modules', f'bizcoder-{plat}-{arch}', 'bin',
+                           'bizcoder.exe' if plat == 'windows' else 'bizcoder') if shim else ''
+        _biz['p'] = exe if exe and os.path.exists(exe) else shim
+    return _biz['p']
+
+
+def bizcoder_status(force=False):
+    """BizCoder 로그인 상태(10분 캐시) → {'ready', 'path', 'detail'}"""
+    if not force and _biz['v'] and time.time() - _biz['t'] < 600:
+        return _biz['v']
+    exe = bizcoder_path()
+    v = {'ready': False, 'path': exe, 'detail': ''}
+    if not exe:
+        v['detail'] = 'BizCoder CLI를 찾지 못했습니다 (npm i -g bizcoder → bizcoder login, 또는 .env의 KOSOE_BIZCODER_CLI)'
+    else:
+        try:
+            r = subprocess.run([exe, 'whoami'], capture_output=True, timeout=60, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
+            out = r.stdout.decode('utf-8', 'replace')
+            v['ready'] = r.returncode == 0 and '로그인됨' in out
+            v['detail'] = '로그인됨' if v['ready'] else '로그인 필요: 터미널에서 bizcoder login'
+        except Exception as e:
+            v['detail'] = str(e)[:120]
+    _biz.update(t=time.time(), v=v)
+    return v
+
+
+def _call_bizcoder(system, user):
+    exe = bizcoder_path()
+    if not exe:
+        raise RuntimeError('BizCoder CLI 없음')
+    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', CFG['bizcoder_model'], '--dir', BIZ_DIR],
+                       input=f'{system}\n\n{user}'.encode('utf-8'), capture_output=True, timeout=300, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
+    ev = []
+    for line in r.stdout.decode('utf-8', 'replace').splitlines():
+        if line.startswith('{'):
+            try:
+                ev.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    text = ''.join(e['part'].get('text', '') for e in ev if e.get('type') == 'text' and isinstance(e.get('part'), dict))
+    if not text:
+        msg = next((json.dumps(e.get('error') or e.get('part'), ensure_ascii=False) for e in ev if e.get('type') == 'error'), '')
+        msg = msg or (r.stderr.decode('utf-8', 'replace') or '응답 없음')[-200:]
+        if '로그인' in msg or 'login' in msg.lower() or 'auth' in msg.lower():
+            _biz.update(t=0, v=None)
+            msg += ' → 터미널에서 bizcoder login'
+        raise RuntimeError('BizCoder: ' + msg[:300])
+    return text
+
+
 def available():
     if CFG['llm_kind'] == 'rule':
         return False
@@ -192,12 +266,15 @@ def display():
 
 import threading
 _fast = threading.local()
+_prov = threading.local()          # ctx['provider'] — 'bizcoder' 면 이 호출은 BizCoder(사내 LLM)로
 
 
 def call(system, user, max_tokens=2500, fast=False):
     """모델 한 번 호출 → (텍스트, ms). 실패하면 예외. fast=True(또는 ctx['fast'])면 가벼운 일용 빠른 모델."""
     fast = fast or getattr(_fast, 'on', False)
     t0 = time.time()
+    if getattr(_prov, 'name', '') == 'bizcoder':
+        return _call_bizcoder(system, user), int((time.time() - t0) * 1000)
     model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
     if CFG['llm_kind'] == 'claude_cli':
         return _call_cli(system, user, model), int((time.time() - t0) * 1000)
@@ -241,19 +318,24 @@ def ping():
 def _try(ctx, fn_llm, fn_rule):
     ctx = ctx or {}
     mk = ctx.get('mk')
+    biz = ctx.get('provider') == 'bizcoder'
     meta = {'mode': 'rule', 'model': '규칙 기반', 'label': '규칙 기반(보조)', 'ms': 0, 'masked': 0}
-    if ctx.get('use_llm', True) and available():
+    if ctx.get('use_llm', True) and (bizcoder_status()['ready'] if biz else available()):
         try:
             _fast.on = bool(ctx.get('fast'))
+            _prov.name = 'bizcoder' if biz else ''
             out, ms = fn_llm(mk.mask if mk else (lambda x: x))
             if mk:
                 out = mk.unmask(out)
-            return out, {'mode': 'llm', 'model': CFG['llm_model'], 'label': ctx.get('label') or display(), 'ms': ms,
-                         'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
+            return out, {'mode': 'llm', 'model': CFG['bizcoder_model'] if biz else CFG['llm_model'], 'label': ctx.get('label') or display(),
+                         'ms': ms, 'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
         except Exception as e:
             meta['error'] = str(e)[:200]
         finally:
             _fast.on = False
+            _prov.name = ''
+    elif biz:
+        meta['error'] = bizcoder_status()['detail']
     t0 = time.time()
     out = fn_rule()
     meta['ms'] = int((time.time() - t0) * 1000)
