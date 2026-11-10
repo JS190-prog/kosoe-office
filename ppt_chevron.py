@@ -17,6 +17,7 @@ from core import ROOT, today_kr
 # 같은 장 구성(01_cover · 02_agenda · 06_card_grid · 10_closing, 같은 {{빈칸}})인 덱만 쓴다. 양식 preset "deck:<이름>"으로 고른다.
 DECKS = ('koscom-chevron', 'gradient-mesh', 'midnight-panel', 'open-road', 'polarity', 'signal-green', 'warm-doc')
 DECK_DIR = '.claude/skills/ppt-master/templates/decks/{}/templates'
+GUIDE = re.compile(r'\s*<g id="[\w-]*guide">.*?</g>', re.S)     # 템플릿 작성용 안내(open-road 표지 photo-guide 「replace this plate with an image」) — 슬라이드에서 뺀다
 FB = "'KoPub돋움체 Bold', 'KoPubDotum Bold', Pretendard, 'Malgun Gothic', sans-serif"
 FM = "'KoPub돋움체 Medium', 'KoPubDotum Medium', Pretendard, 'Malgun Gothic', sans-serif"
 ORANGE, INK, INK2, LINE = '#ee6d1d', '#2b2b2e', '#6e6e73', '#dcdce0'
@@ -135,7 +136,7 @@ class Deck:
 
     def t(self, name):
         if name not in self.tpl:
-            self.tpl[name] = corp.read_text('koscom-doc-pack', f'{self.base}/{name}')
+            self.tpl[name] = GUIDE.sub('', corp.read_text('koscom-doc-pack', f'{self.base}/{name}'))
         return self.tpl[name]
 
     def text(self, x, y, s, fs=16, fill=None, bold=False, anchor='start'):
@@ -353,4 +354,6 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 셰�
     assert (th.left, th.right, th.top, th.bottom, th.cards[0]['bx'], th.cards[1]['bx']) == (80, 1200, 256, 640, 108, 876)
     assert type(th.left) is int and int(1120 * .42) == 470
     assert deck_name('deck:warm-doc') == 'warm-doc' and deck_name('deck:없는덱') == deck_name('') == 'koscom-chevron'
+    assert GUIDE.sub('', '<svg>\n  <g id="photo-guide">\n    <text>replace this plate</text>\n  </g>\n  <g id="title-slot"><text>{{TITLE}}</text></g></svg>') \
+        == '<svg>\n  <g id="title-slot"><text>{{TITLE}}</text></g></svg>'
     print('ppt_chevron selftest OK')

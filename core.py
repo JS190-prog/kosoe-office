@@ -36,7 +36,10 @@ def load_env():
         'llm_base': get('KOSOE_LLM_BASE_URL', 'https://api.anthropic.com').rstrip('/'),
         'claude_cli': get('KOSOE_CLAUDE_CLI'),
         'claude_token': get('KOSOE_CLAUDE_TOKEN'),
-        'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),
+        'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),      # 폐쇄망(사내 LLM) 기본값: same(구독 CLI 시연) | bizcoder | rule — 화면에서 바꾸면 policy 표가 우선
+        'bizcoder_cli': get('KOSOE_BIZCODER_CLI'),
+        'bizcoder_model': get('KOSOE_BIZCODER_MODEL', 'bizrouter/deepseek/deepseek-v4-flash-0731'),
+        'bizcoder_label': get('KOSOE_BIZCODER_LABEL', 'DeepSeek V4 Flash'),
         'skills_repo': get('KOSOE_SKILLS_REPO', 'humanist96/kosoe-office-skills'),
         'skills_offline': get('KOSOE_SKILLS_OFFLINE', '') == '1',
         'ppt_engine': get('KOSOE_PPT_ENGINE', 'ppt-master'),      # ppt-master | lite
