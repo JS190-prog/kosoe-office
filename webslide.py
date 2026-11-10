@@ -103,7 +103,9 @@ def _agenda(secs):
             f'    <h2 class="t a">목차</h2>\n    <div class="agenda mini a" style="margin-top:40px">{rows}</div>\n  </section>\n')
 
 
-def make(bp, template, people, path, job_dir, chain=None):
+def make(bp, template, people, path, job_dir, chain=None, theme=None):
+    """theme: 문서 테마(doc_themes) — 테마 CSS를 얹고, 휴대폰·스크립트 꺼진 미리보기에서도 보이게 한다."""
+    import doc_themes
     root = corp.path(WS)
     deck = os.path.join(job_dir, 'web')
     if os.path.isdir(deck):
@@ -153,6 +155,7 @@ def make(bp, template, people, path, job_dir, chain=None):
         data['charts'] = charts
         return m.group(1) + json.dumps(data, ensure_ascii=False) + m.group(3)
     s = re.sub(r'(<script type="application/json" id="deck-data">)(.*?)(</script>)', dd, s, count=1, flags=re.S)
+    s = doc_themes.web_apply(s, theme)
     open(ip, 'w', encoding='utf-8').write(s)
 
     r = subprocess.run([sys.executable, os.path.join(root, 'scripts', 'build_single.py'), deck, path, '--referenced-only'],

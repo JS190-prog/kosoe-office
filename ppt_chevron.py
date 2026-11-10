@@ -248,8 +248,9 @@ class Deck:
         parts.append(f'<line x1="{x}" y1="{base}" x2="{x + w}" y2="{base}" stroke="{INK}" stroke-width="1"/>')
 
 
-def make(bp, template, people, path, job_dir):
-    """설계도 → PPTX. 돌려주는 값: 장 수."""
+def make(bp, template, people, path, job_dir, theme=None):
+    """설계도 → PPTX. 돌려주는 값: 장 수. theme: 문서 테마(doc_themes) — 색·서체·표지 바탕만 바뀐다."""
+    import doc_themes
     d = Deck()
     form = template['name']
     secs = bp['sections']
@@ -260,13 +261,17 @@ def make(bp, template, people, path, job_dir):
         os.remove(os.path.join(out_dir, f))
     with open(os.path.join(proj, 'spec_lock.md'), 'w', encoding='utf-8') as f:
         f.write('# spec_lock\n\n## pptx_structure\n- mode: flat\n')
-    pages = [d.cover(bp, form, {**people, 'subtitle': template.get('desc', '')})]
+    pages, kinds = [d.cover(bp, form, {**people, 'subtitle': template.get('desc', '')})], ['cover']
     if len(secs) >= 3:
         pages.append(d.agenda(secs, len(pages) + 1))
+        kinds.append('agenda')
     for i, s in enumerate(secs, 1):
         pages.append(d.body(i, s, form, len(pages) + 1))
+        kinds.append('body')
     pages.append(d.closing('감사합니다', f"{people.get('dept', '')} {people.get('담당', '')} · {today_kr()}", len(pages) + 1))
+    kinds.append('closing')
     for i, svg in enumerate(pages, 1):
+        svg = doc_themes.ppt_apply(svg, theme, kinds[i - 1])        # 문서 테마(색·서체·표지 바탕)
         svg = re.sub(r'\s(data-pptx-[a-z-]+)="[^"]*"', '', svg)      # flat 구조
         with open(os.path.join(out_dir, f'{i:02d}.svg'), 'w', encoding='utf-8') as f:
             f.write(svg)

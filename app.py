@@ -21,6 +21,7 @@ from flask import Flask, abort, g, has_request_context, jsonify, request, send_f
 import checks
 import core
 import corp
+import doc_themes
 import engines
 import extract
 import fillform
@@ -369,6 +370,13 @@ def ai_ping():
     return ok(ping=p, usage=llm.usage())
 
 
+@app.get('/api/doc-themes')
+@login_required
+def doc_theme_list():
+    """PPT·웹슬라이드를 만들 때 고르는 디자인 테마 9가지."""
+    return ok(themes=doc_themes.listing(), default=doc_themes.DEFAULT)
+
+
 @app.get('/api/health')
 def health():
     p = llm.ping() if request.args.get('ping') else {'ok': llm.available(), 'error': ai_state()['detail']}
@@ -558,9 +566,18 @@ def _file_text(path, fmt):
         return None
 
 
-def _render(doc_id, ver, fmt, bp, t, u, meta, source=''):
+def _last_theme(doc_id, fmt):
+    """이 문서를 앞서 만들 때 고른 문서 테마(없으면 기본)."""
+    f = row(g.con, 'select resolution from doc_files where doc_id=? and fmt=? order by ver desc limit 1', doc_id, fmt)
+    return doc_themes.norm((J(f['resolution'], {}) or {}).get('theme') if f else None)
+
+
+def _render(doc_id, ver, fmt, bp, t, u, meta, source='', theme=None):
     tr = template_for_render(t)
-    path, warns, ms, engine = engines.make(fmt, bp, tr, people_of(u), doc_id, ver)
+    theme = doc_themes.norm(theme) if theme else _last_theme(doc_id, fmt)      # 고르지 않으면 지난 버전의 테마를 잇는다
+    if fmt == 'hwp':
+        theme = doc_themes.DEFAULT                 # 한글은 회사 양식 그대로
+    path, warns, ms, engine = engines.make(fmt, bp, tr, people_of(u), doc_id, ver, theme)
     cks = engines.check(bp, warns, *_style_of(t))
     if fmt != 'hwp':
         cks = [c for c in cks if c['id'] != 'render']
@@ -574,7 +591,7 @@ def _render(doc_id, ver, fmt, bp, t, u, meta, source=''):
         bad = [i for i in cc['items'] if i['kind'] in ('mismatch', 'unknown')]
         cks.append({'id': 'cross', 'name': '원본값 대조 (원본 자료 ↔ 결과 파일)', 'ok': not bad, 'fix': False,
                     'detail': '; '.join(i['detail'] for i in bad)[:200] or f"값 {cc['checked']}개 대조 · 빠진 값 {cc['missing']}개는 참고"})
-    res = {'engine': engine, **(skills.resolve(info['id'])['resolution'] if info.get('id') else
+    res = {'engine': engine, 'theme': theme, 'theme_name': doc_themes.NAMES[theme], **(skills.resolve(info['id'])['resolution'] if info.get('id') else
                                 {'corp': {engine['corp']: engine['sha']}, 'skills': [], 'repo_head': skills.STATE['head'][:7]})}
     g.con.execute('insert into doc_files values(?,?,?,?,?,?,?,?,?,?)', (doc_id, ver, fmt, path, json.dumps(cks, ensure_ascii=False),
                                                                        json.dumps(warns, ensure_ascii=False), ms, json.dumps(meta or {}, ensure_ascii=False),
@@ -590,6 +607,7 @@ def compose_generate(cid):
     c = _my_compose(cid)
     b = request.json or {}
     fmts = [f for f in (b.get('fmts') or [c['fmt']]) if f in FMT]
+    theme = b.get('theme') if b.get('theme') in doc_themes.IDS else None      # PPT·웹 디자인 테마(없으면 지난 버전의 것)
     sync_forms()                                   # 승인된 최신 스킬로 만든다(다음 문서부터 반영)
     t = row(g.con, 'select * from templates where id=?', c['template_id'])
     if not t:
@@ -612,7 +630,7 @@ def compose_generate(cid):
     out = []
     try:
         for f in fmts:
-            cks, ms = _render(doc_id, ver, f, bp, t, g.u, meta, c['source'] or '')
+            cks, ms = _render(doc_id, ver, f, bp, t, g.u, meta, c['source'] or '', theme)
             out.append({'fmt': f, 'ms': ms, 'checks': cks})
     except Exception as e:
         return err(f'문서 생성 실패: {e}', 500)

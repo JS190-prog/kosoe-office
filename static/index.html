@@ -192,6 +192,19 @@ pre.code{background:#0f1b33;color:#d6e2ff;padding:14px;border-radius:10px;font:1
 .theme-card small{margin-left:5px;font-size:11px;font-weight:700;color:#F06E1E}
 .theme-card:hover,.theme-card:focus-visible{border-color:#F06E1E}
 .theme-card.on{outline:2px solid #F06E1E;outline-offset:-2px}
+/* 문서 테마 고르기 — PPT·웹슬라이드를 만들 때 고르는 디자인 9가지 */
+.dth-row{display:flex;align-items:center;gap:10px;width:100%;margin-top:10px;padding:8px 10px;border:1px solid rgba(128,128,128,.35);border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.dth-row:hover,.dth-row:focus-visible{border-color:#F06E1E}
+.dth-row img{width:64px;height:36px;object-fit:cover;border-radius:4px;border:1px solid rgba(128,128,128,.25);flex:none}
+.dth-row .nm{flex:1;min-width:0;line-height:1.35}
+.dth-row .nm small{display:block;font-size:11px;opacity:.7}
+.dth-row .nm b{display:block;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dth-row .chg{font-size:12px;font-weight:700;color:#F06E1E;white-space:nowrap}
+.dth-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.dth-card .two{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:rgba(128,128,128,.25);border-bottom:1px solid rgba(128,128,128,.25);margin-bottom:6px}
+.dth-card .two figure{margin:0;position:relative}
+.dth-card .two img{aspect-ratio:16/9;margin:0;border:0}
+.dth-card .two figcaption{position:absolute;left:6px;bottom:6px;padding:1px 6px;border-radius:3px;font-size:10.5px;font-weight:700;background:rgba(0,0,0,.6);color:#fff}
 </style>
 <script>
 // 화면 테마: 브라우저마다 기억한다(localStorage 'kosoe.theme'). ?theme=<id> 로도 바꿀 수 있다.
@@ -482,16 +495,45 @@ function renderOut() {
   $('#outp').innerHTML = `
    <div class="small muted" style="margin-bottom:6px">${F ? '정해진 서식의 칸에 값을 넣어 한글 파일을 만듭니다' : '같은 설계도로 여러 형식을 한 번에'}</div>
    <div class="fmtpick">${(F ? F.fmts : ['hwp', 'ppt', 'web']).map(f => `<label><input type="checkbox" value="${f}" ${F || f === def ? 'checked' : ''}><span>${FMT[f]}</span></label>`).join('')}</div>
+   ${F ? '' : `<div id="dthRow">${docThemeRow()}</div>`}
    <button class="btn o" style="width:100%;justify-content:center;margin:12px 0 4px;padding:12px" onclick="generate()">🚀 문서 만들기${CMP.doc_id ? ' (새 버전)' : ''}</button>
    <div class="small muted" style="text-align:center">${F ? `전사 공용 스킬 <b>${esc(F.corp)}</b>@${esc(F.sha)} — 조항 · 글꼴 · 표 모양은 서식 그대로, 칸의 값만 바뀝니다` : '전사 공용 스킬로 만듭니다 — 한글 koscom-hwp-report · PPT ppt-master(koscom-chevron) · 웹 koscom-webslide'}</div>
    <div id="res" style="margin-top:14px">${LASTDOC && LASTDOC.id === CMP.doc_id ? resHtml(LASTDOC) : ''}</div>`;
+}
+// ───────────── 문서 테마: PPT·웹슬라이드의 디자인을 고른다(내용과 양식 규칙은 그대로, 한글은 회사 양식 그대로) ─────────────
+let DOC_THEMES = null, DOC_THEME = null;
+try { DOC_THEME = localStorage.getItem('kosoe.docTheme'); } catch (e) {}
+const docTheme = () => (DOC_THEMES || []).find(t => t.id === DOC_THEME) || {id: 'base', name: '원래 디자인', desc: '전사 스킬의 기본 모습 그대로', ppt_thumb: ''};
+function docThemeRow() {
+  if (!DOC_THEMES) {                               // 처음 한 번 목록을 받아 온 뒤 이 줄만 다시 그린다
+    api('/api/doc-themes').then(d => { DOC_THEMES = d.themes; if (!DOC_THEMES.some(t => t.id === DOC_THEME)) DOC_THEME = d.default; })
+      .catch(() => { DOC_THEMES = []; }).then(() => { const r = $('#dthRow'); if (r) r.innerHTML = docThemeRow(); });
+    return '<div class="small muted" style="margin-top:10px">디자인 테마를 불러오는 중…</div>';
+  }
+  const t = docTheme();
+  return `<button class="dth-row" onclick="docThemeModal()" title="PPT · 웹슬라이드 디자인 테마 고르기">${t.ppt_thumb ? `<img src="${t.ppt_thumb}" alt="">` : ''}
+    <span class="nm"><small>PPT · 웹 디자인 테마</small><b>${esc(t.name)}</b></span><span class="chg">바꾸기</span></button>`;
+}
+function docThemeModal() {
+  const cur = docTheme().id;
+  modal('PPT · 웹 디자인 테마', `<p class="theme-note">고른 디자인으로 PPT와 웹슬라이드를 만듭니다. 내용과 부서 규칙, 검수는 어느 테마에서나 같고 한글 문서는 회사 양식 그대로입니다.</p>
+   <div class="dth-grid">${(DOC_THEMES || []).map(t => `<button class="theme-card dth-card${t.id === cur ? ' on' : ''}" onclick="setDocTheme('${t.id}')"${t.id === cur ? ' aria-current="true"' : ''}>
+     <div class="two"><figure><img src="${t.ppt_thumb}" alt=""><figcaption>PPT</figcaption></figure><figure><img src="${t.web_thumb}" alt=""><figcaption>웹</figcaption></figure></div>
+     <b>${esc(t.name)}${t.id === cur ? '<small>선택됨</small>' : ''}</b><span>${esc(t.desc)}</span></button>`).join('')}</div>`, true);
+}
+function setDocTheme(id) {
+  DOC_THEME = id;
+  try { localStorage.setItem('kosoe.docTheme', id); } catch (e) {}
+  closeModal();
+  const r = $('#dthRow'); if (r) r.innerHTML = docThemeRow();
+  toast(`디자인 테마: ${docTheme().name} — 다음에 만드는 PPT · 웹슬라이드부터 적용됩니다`);
 }
 async function generate() {
   clearTimeout(saveT);
   await api(`/api/compose/${CMP.id}`, {method: 'PUT', body: {blueprint: CMP.blueprint}});
   const fmts = [...document.querySelectorAll('.fmtpick input:checked')].map(i => i.value);
   if (!fmts.length) return toast('형식을 하나 이상 골라 주세요', true);
-  const d = await busy(`${fmts.map(f => FMT[f]).join(' · ')} 파일을 만드는 중…`, () => api(`/api/compose/${CMP.id}/generate`, {body: {fmts}}));
+  const d = await busy(`${fmts.map(f => FMT[f]).join(' · ')} 파일을 만드는 중…`, () => api(`/api/compose/${CMP.id}/generate`, {body: {fmts, theme: DOC_THEME || undefined}}));
   CMP.doc_id = d.doc.id; LASTDOC = d.doc;
   toast(`v${d.doc.ver} 완성 — ${d.results.map(r => FMT[r.fmt] + ' ' + (r.ms / 1000).toFixed(1) + '초').join(', ')}`);
   renderOut();
@@ -502,7 +544,7 @@ function resHtml(doc) {
   const fixable = cur.some(f => f.checks.some(c => !c.ok && c.fix));
   return `${updBanner(doc)}<div class="row sp"><b>v${doc.ver} 결과</b><span class="small muted">${esc(doc.updated)}</span></div>
    ${cur.map(f => `<div class="out-f" style="margin-top:8px"><div class="row sp">${fmtTag(f.fmt)}<span class="small muted">${(f.ms / 1000).toFixed(1)}초 · ${kb(f.size)}</span></div>
-     <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}</div>
+     <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}${f.fmt !== 'hwp' && f.resolution?.theme_name ? ' · 🎨 ' + esc(f.resolution.theme_name) : ''}</div>
      <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>
      <div class="row wrap" style="margin-top:8px"><a class="btn sm" href="/api/docs/${doc.id}/file?fmt=${f.fmt}&ver=${f.ver}">⬇ 받기</a>
        <button class="btn ghost sm" onclick="preview('${doc.id}','${f.fmt}',${f.ver})">👁 미리보기</button>${launchBtn(doc.id, f.fmt, f.ver)}</div></div>`).join('')}

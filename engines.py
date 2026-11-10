@@ -530,7 +530,8 @@ def fill_engine(cid):
     return {'corp': cid, 'name': f'{cid} · 서식 채우기', 'sha': (c.get('sha') or '')[:7]}
 
 
-def make(fmt, bp, template, people, doc_id, ver):
+def make(fmt, bp, template, people, doc_id, ver, theme=None):
+    """theme: 문서 테마(doc_themes) — PPT·웹의 겉모습만 바꾼다. 한글은 양식 그대로."""
     t0 = time.time()
     ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html'}[fmt]
     path = out_path(doc_id, ver, ext)
@@ -550,7 +551,7 @@ def make(fmt, bp, template, people, doc_id, ver):
             if CFG['ppt_engine'] != 'ppt-master':
                 raise RuntimeError('설정: 경량 PPT 엔진')
             import ppt_chevron
-            ppt_chevron.make(bp, template, people, path, jd)
+            ppt_chevron.make(bp, template, people, path, jd, theme)
         except Exception as e:
             import run_ppt_master
             run_ppt_master.patch()
@@ -560,7 +561,7 @@ def make(fmt, bp, template, people, doc_id, ver):
     else:
         try:
             import webslide
-            webslide.make(bp, template, people, path, jd, template.get('chain_names'))
+            webslide.make(bp, template, people, path, jd, template.get('chain_names'), theme)
         except Exception as e:
             make_web(bp, template, people, path)
             warns.append(f'[웹] 전사 webslide 대신 경량 웹 렌더러 사용: {str(e)[:120]}')
