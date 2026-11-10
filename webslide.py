@@ -1,6 +1,6 @@
 """웹 어댑터 — 전사 스킬 koscom-webslide로 설계도를 움직이는 단일 HTML 웹슬라이드로 만든다.
 
-1) new_deck.py로 템플릿을 복사(표지·요약·맺음만 남기고 부록·요약 모션 제외)
+1) new_deck.py로 원고 원본을 복사(기본 kosoe: 표지·요약·맺음만 / 양식 preset web:<id>의 motion·scrolline·three: 표지·맺음만, 부록·요약 모션 제외)
 2) 표지·목차·본문·맺음을 설계도로 다시 쓰고, 표의 숫자는 deck-data charts(kind: vbar)로
 3) build_single.py --referenced-only 로 서체·그림·Chart.js까지 넣은 단일 파일
 엔진(CSS·JS·편집 모드·차트·자동 배율)은 전사 스킬 것을 그대로 쓴다.
@@ -18,6 +18,14 @@ from core import today_kr
 
 E = html.escape
 WS = 'koscom-webslide'
+TEMPLATES = ('kosoe', 'motion', 'scrolline', 'three')      # 원고 원본 — 양식 preset "web:<id>"로 고른다
+SEC = re.compile(r'\n(?:  <!-- [^\n]*-->\n)?  <section class="slide[\s"].*?</section>\n', re.S)   # 스킬 new_deck.SEC 와 같은 장 자르기
+NOTES = re.compile(r'\s*<aside class="notes">.*?</aside>', re.S)
+
+
+def template_id(preset):
+    t = preset[4:] if (preset or '').startswith('web:') else ''
+    return t if t in TEMPLATES else 'kosoe'
 
 
 def _num(s):
@@ -103,13 +111,53 @@ def _agenda(secs):
             f'    <h2 class="t a">목차</h2>\n    <div class="agenda mini a" style="margin-top:40px">{rows}</div>\n  </section>\n')
 
 
+def _other(s, bp, template, people, chips, body):
+    """kosoe 밖의 원고(motion · scrolline · three): 표지 다음에 목차·본문을 넣고, 표지·맺음의 글을 이 문서로 바꾼다.
+    원고의 표본 장식(표본 낱말·숫자가 든 흐르는 글줄·연도 레일·효과 상자·52% 링)은 이 문서 값으로 바꾸거나 뺀다."""
+    form, title, dept = template['name'], bp['title'], people.get('dept', '')
+    who = f'{dept} · {people.get("담당", "")}'
+    heads = [x['heading'] for x in bp['sections']]
+    secs = list(SEC.finditer(s))
+    cover, close = secs[0].group(0), secs[-1].group(0)
+    one = lambda pat, rep, x: re.sub(pat, rep, x, count=1, flags=re.S)  # noqa: E731
+    # 표지: 공통(h1 · kick · sub · line) → motion(fo · 흐르는 글줄 ks r1·r2·r3) → scrolline(연도 레일)
+    cover = one(r'(<h1\b[^>]*>).*?(</h1>)', lambda m: m.group(1) + _em_last(title) + m.group(2), cover)
+    cover = one(r'(<div class="kick[^"]*">\s*<span class="bar"></span>).*?(</div>)', lambda m: m.group(1) + E(form) + m.group(2), cover)
+    cover = one(r'(<p class="(?:sub|sl-sub)\b[^"]*">).*?(</p>)', lambda m: m.group(1) + E(template.get('desc', '')) + m.group(2), cover)
+    cover = one(r'(<p class="line\b[^"]*">).*?(</p>)', lambda m: m.group(1) + E(f'{who} · {today_kr()}') + m.group(2), cover)
+    cover = one(r'(<div class="fo"><b>).*?(</b>).*?(</div>)', lambda m: m.group(1) + E(form) + m.group(2) + E(f'{dept} · {today_kr()}') + m.group(3), cover)
+    words = title.split()
+    key = (f'<span class="kl">{E(" · ".join(words[:-1]))} ·&nbsp;</span>' if len(words) > 1 else '') + f'<em>{E(words[-1])}</em><span class="kr">&nbsp;· {E(form)}</span>'
+    cover = one(r'(<div class="ks r1"[^>]*>).*?(</div>)', lambda m: m.group(1) + E(' · '.join(heads * 2)) + m.group(2), cover)
+    cover = one(r'(<div class="ks r2"[^>]*>).*?(</div>)', lambda m: m.group(1) + key + m.group(2), cover)
+    cover = one(r'(<div class="ks r3"[^>]*>).*?(</div>)', lambda m: m.group(1) + E(' · '.join([form, dept, today_kr()] * 2)) + m.group(2), cover)
+    lis = ''.join(('<li class="on">' if i == 0 else '<li>') + f'<b>{i + 1:02d}</b><span>{E(h)}</span></li>' for i, h in enumerate(heads[:4]))
+    cover = one(r'(<ol class="sl-years">).*?(</ol>)', lambda m: m.group(1) + lis + m.group(2), cover)
+    # 맺음: h2 = 제목, 첫 lead·line = 작성 부서·담당, kick = CLOSING, 칩 = 스킬 사슬 / 표본 효과 상자·52% 링은 뺀다
+    n = 1 + (1 if len(heads) >= 3 else 0) + len(heads) + 1
+    close = one(r'(<h2\b[^>]*>).*?(</h2>)', lambda m: m.group(1) + _em_last(title) + m.group(2), close)
+    close = one(r'(<p class="(?:lead|line)\b[^"]*"[^>]*>).*?(</p>)', lambda m: m.group(1) + E(who) + m.group(2), close)
+    close = one(r'(<div class="kick[^"]*">\s*<span class="bar"></span>).*?(</div>)', lambda m: m.group(1) + 'CLOSING' + m.group(2), close)
+    close = one(r'(<div class="fo"><b>)\d+(</b>)', lambda m: m.group(1) + f'{n:02d}' + m.group(2), close)
+    close = one(r'(<div class="chip-row a"[^>]*>).*?(</div>)', lambda m: m.group(1) + chips + m.group(2), close)
+    close = one(r'\n\s*<div class="sl-effects">.*?(?=\n\s*<p class="sl-thanks">)', '', close)
+    close = one(r'\n\s*<div class="cl-ring"[^>]*>.*?<div class="mm-label">.*?</div>\s*</div>', '', close)
+    return s[:secs[0].start()] + NOTES.sub('', cover) + body + NOTES.sub('', close) + s[secs[-1].end():]
+
+
 def make(bp, template, people, path, job_dir, chain=None):
     root = corp.path(WS)
+    tid = template_id(template.get('preset'))
     deck = os.path.join(job_dir, 'web')
     if os.path.isdir(deck):
         shutil.rmtree(deck, ignore_errors=True)
-    r = subprocess.run([sys.executable, os.path.join(root, 'scripts', 'new_deck.py'), deck, '--title', bp['title'], '--keep', '1,2,23',
-                        '--drop-side', 'basis,sources,qa,gallery,video,live', '--no-motion'], capture_output=True, timeout=120,
+    if tid == 'kosoe':
+        keep, drop = '1,2,23', 'basis,sources,qa,gallery,video,live'
+    else:   # 표지(1장)와 맺음(마지막 장)만 남긴다
+        n = len(SEC.findall(open(os.path.join(root, 'templates', tid, 'index.html'), encoding='utf-8').read()))
+        keep, drop = f'1,{n}', 'basis,sources'
+    r = subprocess.run([sys.executable, os.path.join(root, 'scripts', 'new_deck.py'), deck, '--template', tid, '--title', bp['title'],
+                        '--keep', keep, '--drop-side', drop, '--no-motion'], capture_output=True, timeout=120,
                        env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
     if r.returncode != 0:
         raise RuntimeError('웹 템플릿 복사 실패: ' + r.stderr.decode('utf-8', 'replace')[-300:])
@@ -125,27 +173,17 @@ def make(bp, template, people, path, job_dir, chain=None):
     s = re.sub(r'(<div class="brand">\s*<svg.*?</svg>)\s*.*?(</div>)', lambda m: m.group(1) + f'\n      KOSCOM<span class="div"></span><small>{E(form)}</small>\n    ' + m.group(2), s, count=1, flags=re.S)
     s = re.sub(r'<span class="pill">.*?</span>\s*(?=<button)', f'<span class="pill"><i>웹</i>{E(people.get("dept", ""))} · {today_kr()}</span>\n      ', s, count=1, flags=re.S)
 
-    # 표지
     chips = ''.join(f'<span class="tag solid">{E(c)}</span>' for c in (chain or [])[:4])
-    cover = (f'<div style="position:relative;display:flex;flex-direction:column;justify-content:center;height:100%;max-width:640px">\n'
-             f'      <div class="kick a"><span class="bar"></span>{E(form)}</div>\n'
-             f'      <h1 class="a" style="font-size:{60 if len(bp["title"]) <= 14 else 46}px;line-height:1.2">{_em_last(bp["title"])}</h1>\n'
-             f'      <p class="sub a">{E(template.get("desc", ""))}</p>\n'
-             f'      <p class="line a">{E(people.get("dept", ""))} · {E(people.get("담당", ""))} · {today_kr()}</p>\n'
-             f'      <div class="chip-row a" style="margin-top:26px">{chips}</div>\n'
-             f'      <div class="a"><button class="cta" data-go="1">펼쳐 보기 <span>↗</span></button></div>\n    </div>\n  </section>')
-    s = re.sub(r'<div style="position:relative;display:flex;flex-direction:column;justify-content:center;height:100%;max-width:640px">.*?</section>',
-               lambda m: cover, s, count=1, flags=re.S)
-    s = re.sub(r'<div class="k-say">.*?</div>', '<div class="k-say">회사 양식대로<br>만들었어요</div>', s, count=1, flags=re.S)
-
-    # 요약 장 → 목차 + 본문
     body = (_agenda(secs) if len(secs) >= 3 else '') + ''.join(_section(i, sec, form, charts) for i, sec in enumerate(secs, 1))
-    s = re.sub(r'<!-- 02 ONE-PAGE SUMMARY.*?</section>', lambda m: body, s, count=1, flags=re.S)
-
-    # 맺음
-    s = re.sub(r'(<section class="slide black"[^>]*>.*?<h2 class="a"[^>]*>).*?(</h2>)', lambda m: m.group(1) + f'{E(bp["title"])}' + m.group(2), s, count=1, flags=re.S)
-    s = re.sub(r'(<section class="slide black".*?<p class="lead a"[^>]*>).*?(</p>)', lambda m: m.group(1) + E(f'{people.get("dept", "")} · {people.get("담당", "")}') + m.group(2), s, count=1, flags=re.S)
-    s = re.sub(r'(<section class="slide black".*?<div class="chip-row a"[^>]*>).*?(</div>)', lambda m: m.group(1) + chips + m.group(2), s, count=1, flags=re.S)
+    if tid == 'three':      # 3D 무대 원고: 본문 장은 원고의 글 위주 장처럼 멀리서 본 무대(overview)·남색 테마 — 입체가 글을 가리지 않게.
+        #                     목차는 원고처럼 세로 목록(폭 780px 제한이라 가로 축약형은 넘친다), 밝은 카드의 제목은 잉크색(남색 장의 흰 글자 대신)
+        body = (body.replace('<section class="slide" ', '<section class="slide navy" data-theme="navy" data-scene="overview" ')
+                .replace('class="agenda mini a"', 'class="agenda a"')
+                .replace('<h4 style="font-size:22px;margin:8px 0 10px">', '<h4 style="font-size:22px;margin:8px 0 10px;color:var(--ink)">'))
+    if tid != 'kosoe':
+        s = _other(s, bp, template, people, chips, body)
+    else:
+        s = _kosoe(s, bp, template, people, chips, body)
 
     # deck-data
     def dd(m):
@@ -160,3 +198,32 @@ def make(bp, template, people, path, job_dir, chain=None):
     if r.returncode != 0 or not os.path.exists(path):
         raise RuntimeError('웹 단일 파일 만들기 실패: ' + (r.stdout + r.stderr).decode('utf-8', 'replace')[-300:])
     return len(secs) + (3 if len(secs) >= 3 else 2)
+
+
+def _kosoe(s, bp, template, people, chips, body):
+    """kosoe 원고: 표지·한 장 요약·맺음만 남긴 덱에서 표지와 맺음을 다시 쓰고, 한 장 요약 자리에 목차·본문을 넣는다."""
+    form = template['name']
+    # 표지
+    cover = (f'<div style="position:relative;display:flex;flex-direction:column;justify-content:center;height:100%;max-width:640px">\n'
+             f'      <div class="kick a"><span class="bar"></span>{E(form)}</div>\n'
+             f'      <h1 class="a" style="font-size:{60 if len(bp["title"]) <= 14 else 46}px;line-height:1.2">{_em_last(bp["title"])}</h1>\n'
+             f'      <p class="sub a">{E(template.get("desc", ""))}</p>\n'
+             f'      <p class="line a">{E(people.get("dept", ""))} · {E(people.get("담당", ""))} · {today_kr()}</p>\n'
+             f'      <div class="chip-row a" style="margin-top:26px">{chips}</div>\n'
+             f'      <div class="a"><button class="cta" data-go="1">펼쳐 보기 <span>↗</span></button></div>\n    </div>\n  </section>')
+    s = re.sub(r'<div style="position:relative;display:flex;flex-direction:column;justify-content:center;height:100%;max-width:640px">.*?</section>',
+               lambda m: cover, s, count=1, flags=re.S)
+    s = re.sub(r'<div class="k-say">.*?</div>', '<div class="k-say">회사 양식대로<br>만들었어요</div>', s, count=1, flags=re.S)
+
+    # 요약 장 → 목차 + 본문
+    s = re.sub(r'<!-- 02 ONE-PAGE SUMMARY.*?</section>', lambda m: body, s, count=1, flags=re.S)
+
+    # 맺음
+    s = re.sub(r'(<section class="slide black"[^>]*>.*?<h2 class="a"[^>]*>).*?(</h2>)', lambda m: m.group(1) + f'{E(bp["title"])}' + m.group(2), s, count=1, flags=re.S)
+    s = re.sub(r'(<section class="slide black".*?<p class="lead a"[^>]*>).*?(</p>)', lambda m: m.group(1) + E(f'{people.get("dept", "")} · {people.get("담당", "")}') + m.group(2), s, count=1, flags=re.S)
+    s = re.sub(r'(<section class="slide black".*?<div class="chip-row a"[^>]*>).*?(</div>)', lambda m: m.group(1) + chips + m.group(2), s, count=1, flags=re.S)
+    # 남긴 원본 장(표지·맺음)의 표본 대본은 뺀다 — 발표자 보기(S)에 원고 표본 대사가 나오지 않게
+    secs = list(SEC.finditer(s))
+    for m in reversed([secs[0], secs[-1]]):
+        s = s[:m.start()] + NOTES.sub('', m.group(0)) + s[m.end():]
+    return s

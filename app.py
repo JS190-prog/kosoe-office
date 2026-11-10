@@ -113,7 +113,7 @@ def people_of(u):
     lead = core.lead_of(g.con, u['team'])
     head = row(g.con, "select * from users where dept=? and role='deptAdmin'", u['dept'])
     fmt = lambda x: f"{x['name']} {x['title']}" if x else ''
-    return {'담당': fmt(u), '팀장': fmt(lead), '부서장': fmt(head), 'dept': u['team']}
+    return {'담당': fmt(u), '팀장': fmt(lead), '부서장': fmt(head), 'dept': u['team'], 'hq': u['dept']}
 
 
 # ───────────── 양식(스킬 저장소 → 갤러리) ─────────────
@@ -149,7 +149,7 @@ def tpl_view(t, u):
         up = list(reversed((info.get('chain') or [])[:-1])) + ['전사']
         o['skill'] = f"{info['id']}@{info.get('version', '')} ← " + ' ← '.join(up)
     else:
-        e = engines.engine_of(t['fmt'])
+        e = engines.engine_of(t['fmt'], t['preset'] or '')
         o['skill'] = f"전사 {e['name']}@{e['sha']}"
     o['usable'] = core.can_use_template(t, u, g.net)
     o['blocked'] = '대외비 양식은 인터넷망에서 쓸 수 없습니다' if g.net == 'internet' and t['grade'] == 'c' else ''
@@ -398,7 +398,12 @@ def compose_new():
         return err('이 양식을 쓸 권한이 없습니다' + (' (대외비 양식은 인터넷망 사용 불가)' if t and g.net == 'internet' and t['grade'] == 'c' else ''), 403)
     files = _uploads(b.get('upload_ids'))
     text = (b.get('request') or '').strip() or t['name']
-    bp, meta = llm.blueprint(_tpl_for_llm(t), text, files, ai_ctx())
+    tl = _tpl_for_llm(t)
+    if t['fmt'] == 'hwp' and engines.hwp_kind({'preset': t['preset']}) == 'form':        # 신청서: 장 대신 사양의 칸을 채운다
+        tl['form_fields'] = engines.form_fields(t['preset'][5:])
+    bp, meta = llm.blueprint(tl, text, files, ai_ctx())
+    if tl.get('form_fields'):
+        bp = engines.form_prefill(bp, people_of(g.u))
     bp = checks.enforce_fixed(bp, J(t['fixed'], []))
     cid = core.new_id('c')
     info = J(t['skill'], {}) or {}

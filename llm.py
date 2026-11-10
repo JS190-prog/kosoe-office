@@ -324,7 +324,29 @@ def route(text, templates, ctx=None):
 
 
 # ───────────── 2. 설계도 작성 ─────────────
+def form_blueprint(template, request_text, files, ctx=None):
+    """신청서: 사양의 칸(template['form_fields'])마다 값 하나 → 설계도 한 장(입력 값)에 「칸 이름 : 값」 항목. 엔진이 {{칸}}에 넣는다."""
+    fields = template['form_fields']
+
+    def build(title, vals):
+        return {'title': _plain(title) or template['name'], 'sections': [{'heading': '입력 값', 'items': [
+            {'label': f, 'text': _plain(vals.get(f)) or '(확인 필요)', 'children': []} for f in fields], 'table': None}]}
+
+    def llm(M):
+        sys = ('너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 신청서 양식의 칸을 채운다.\n'
+               '- 값은 요청과 첨부에 있는 것만 쓴다. 없으면 "(확인 필요)", 해당 없음이 분명하면 "-".\n'
+               "- 금액은 숫자와 쉼표만(원 단위, 예: 119,600). 날짜는 '2026. 11. 17', 기간은 '2026. 11. 17 ~ 11. 18'.\n"
+               '- 칸 하나에 한두 줄. 결재라인·신청일·부서·합계는 앱이 채우므로 쓰지 않는다.\n' + (template.get('rules') or ''))
+        user = (f"양식: {template['name']} ({template.get('desc', '')})\n칸(이 이름 그대로): {fields}\n\n요청: {M(request_text)}\n\n"
+                f'{_attach_text(files, M)}\n\n출력 형식: {{"title": "문서 이름(예: 부산 데이터센터 출장 신청)", "values": {{"칸 이름": "값"}}}}')
+        out, ms = call_json(sys, user, 1500)
+        return build(out.get('title'), out.get('values') or {}), ms
+    return _try(ctx, llm, lambda: build(template['name'], {}))
+
+
 def blueprint(template, request_text, files, ctx=None):
+    if template.get('form_fields'):
+        return form_blueprint(template, request_text, files, ctx)
     outline = json.loads(template['outline'])
     tables = [t for f in files or [] for t in json.loads(f.get('tables') or '[]')]
     fixed = json.loads(template.get('fixed') or '[]')

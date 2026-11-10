@@ -220,7 +220,7 @@ def form_rows():
         rows.append({'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'use': f.get('use', '보고'), 'scope': 'corp',
                      'outline': f['outline'], 'desc': f.get('desc', ''), 'preset': f.get('preset', ''), 'grade': f.get('grade', 'i'),
                      'dept': '', 'team': '', 'owner': '전사', 'ver': '-', 'path': 'registry/corp.forms.yaml', 'tag': '',
-                     'fields': [], 'rules': '', 'fixed': [], 'skill': {'id': '', 'corp': f.get('corp', '')}})
+                     'fields': [], 'rules': f.get('rules', ''), 'fixed': [], 'skill': {'id': '', 'corp': f.get('corp', '')}})
     skills = all_skills()
     for sid, s in skills.items():
         r = resolve(sid, skills)
