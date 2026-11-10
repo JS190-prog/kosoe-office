@@ -58,6 +58,9 @@ BP_SCHEMA_DRAFT = ('{"recipient": str, "title": str, "purpose": str, "attachment
 DRAFT_GUIDE = ('\n기안문 칸: recipient = 수신자(예: 경영지원부장, 내부결재). title = 결재받을 일(예: ○○ 추진 및 계약 체결 의뢰). '
                'purpose = 요청 문장 「아래와 같이 ○○을 추진하고자 하오니」의 ○○ — 제목에서 「추진 및 계약 체결 의뢰」 같은 꼬리를 뺀 일. '
                'attachments = 첨부 문서 목록(「문서명 1부」 꼴, 요청 · 첨부 자료에 있는 것만, 없으면 []). '
+               '업로드한 첨부 파일(「### 첨부: 파일 이름」)은 하나도 빼지 않고 넣는다 — 문서번호가 있는 근거 문서는 「[문서번호] 문서 제목 (시행일) 1부」, '
+               '그 밖의 파일은 파일 이름에서 확장자를 뺀 이름. '
+               '구성의 장 가운데 쓸 내용이 없는 장은 items를 [], table을 null, text를 ""로 둔다(문서에서 빠진다 — 「(확인 필요)」로 채우지 않는다). '
                '장의 text = 장 제목 줄에 「제목 : 내용」으로 붙일 한 줄(필요할 때만, 없으면 ""). 표의 unit = 표 위 단위(예: (단위 : 원, 부가세 별도), 없으면 ""). '
                '하위 항목 중 각주는 text를 「* 」로, 참고는 「※ 」로 시작한다.')
 
@@ -691,6 +694,39 @@ def _clean_bp(bp, outline):
     return out
 
 
+def _stem_key(s):
+    """첨부 이름 비교용: 확장자 · 띄어쓰기 · 기호를 뺀 글자."""
+    return re.sub(r'[\W_]+', '', re.sub(r'\.\w{2,5}$', '', s.strip())).lower()
+
+
+DOCNO = re.compile(r'[가-힣]{1,8}\d{4}-\d{1,5}')     # 문서번호(예: 총무2026-0315, 기획2026-158)
+
+
+def _listed(f, stem, atts):
+    """업로드 파일이 첨부 목록에 이미 있나. 파일 이름의 낱말(_ · 띄어쓰기 · 기호로 나눈 것)이 한 줄에 모두 들어 있거나,
+    파일 이름 · 첫머리의 문서번호가 들어 있으면 같은 문서다(근거 공문은 「[문서번호] 문서 제목 (시행일) 1부」로 쓰므로)."""
+    words = [w for w in (_stem_key(x) for x in re.split(r'[\s_\-()\[\]]+', stem)) if w]
+    if any(all(w in _stem_key(a) for w in words) for a in atts):
+        return True
+    m = DOCNO.search(stem) or DOCNO.search((f.get('text') or '')[:200])
+    return bool(m) and any(m.group() in a for a in atts)
+
+
+def draft_post(bp, files):
+    """기안문 설계도 마무리. 기안문 양식은 장 8개(추진 개요 ~ 기타 사항) 가운데 필요한 것만 쓰므로 내용 없는 장은 뺀다.
+    참고한 업로드 파일은 첨부 목록에 빠짐없이 넣는다(AI가 빠뜨린 파일은 파일 이름으로 뒤에 붙인다)."""
+    secs = [s for s in bp['sections'] if s['items'] or s.get('table') or s.get('text')]
+    out = {**bp, 'sections': secs or bp['sections'][:1]}
+    atts = [re.sub(r'_+', ' ', a) for a in bp.get('attachments') or []]     # 파일 이름의 밑줄은 문서에서 띄어쓰기로
+    for f in files or []:
+        stem = re.sub(r'\.\w{2,5}$', '', (f.get('name') or '').strip()).strip()
+        if stem and not _listed(f, stem, atts):
+            atts.append(re.sub(r'_+', ' ', stem) + ' 1부')
+    if atts:
+        out['attachments'] = atts[:15]
+    return out
+
+
 def _title(v):
     """제목은 한 줄. AI가 표지 글 전체(여러 줄)를 제목에 넣으면 첫 줄만 쓴다 — 제목 칸·문서함·받기 파일 이름에 쓰이는 값이다."""
     first = next((l.strip() for l in re.split(r'[\r\n]+', _plain(v)) if l.strip()), '')
@@ -817,7 +853,8 @@ def blueprint(template, request_text, files, ctx=None):
                 f"출력 형식: {BP_SCHEMA_DRAFT if draft else BP_SCHEMA}" + (DRAFT_GUIDE if draft else ''))
         out, ms = call_json(sys, user, 3000)
         return _clean_bp(out, outline), ms
-    return _try(ctx, llm, rule)
+    bp, meta = _try(ctx, llm, rule)
+    return (draft_post(bp, files) if template.get('preset') == 'draft' else bp), meta
 
 
 # ───────────── 3. 채팅으로 고치기 ─────────────
@@ -858,7 +895,7 @@ def edit(bp, instruction, files, ctx=None, style=None, extra=''):
         for k in DRAFT_KEYS:                        # 기안문 머리 · 첨부를 AI가 빠뜨려도 지시와 관계없으면 그대로 둔다
             if k in bp and k not in nb:
                 nb[k] = bp[k]
-        return {'reply': str(out.get('reply') or '반영했습니다.'), 'blueprint': nb}, ms
+        return {'reply': str(out.get('reply') or '반영했습니다.'), 'blueprint': draft_post(nb, files) if draft else nb}, ms
     return _try(ctx, llm, rule)
 
 
@@ -996,4 +1033,21 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
     assert c['sections'][0]['text'] == '소요 예산 신규 배정' and c['sections'][0]['table']['unit'] == '(단위 : 원)'
     c = _clean_bp({'title': 'T', 'sections': [{'heading': 'h', 'items': [], 'table': {'cols': ['a'], 'rows': [['1']]}}]}, [])
     assert set(c) == {'title', 'sections'} and set(c['sections'][0]) == {'heading', 'items', 'table'} and 'unit' not in c['sections'][0]['table']
+    # 기안문 마무리: 내용 없는 장은 빼고(장 제목 줄만 있는 장은 남김), 업로드 파일은 첨부 목록에 빠짐없이(이미 있으면 그대로)
+    it = {'label': '', 'text': 'x', 'children': []}
+    d = draft_post({'title': 'T', 'attachments': ['[기획2026-1] 기획2026-1_계획 (2026. 1. 2.) 1부'], 'sections': [
+        {'heading': '관련 근거', 'items': [], 'table': None}, {'heading': '추진 개요', 'items': [it], 'table': None},
+        {'heading': '계약 사항', 'items': [], 'table': None}, {'heading': '소요 예산', 'items': [], 'table': None, 'text': '1,000원'}]},
+        [{'name': '기획2026-1_계획.hwp'}, {'name': '시연메모_고객 세미나.txt'}, {'name': 'E증권(가상).pptx'}])
+    assert [s['heading'] for s in d['sections']] == ['추진 개요', '소요 예산']
+    assert d['attachments'] == ['[기획2026-1] 기획2026-1 계획 (2026. 1. 2.) 1부', '시연메모 고객 세미나 1부', 'E증권(가상) 1부']
+    assert 'attachments' not in draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [], 'table': None}]}, [])
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
+                    'attachments': ['[총무2026-0315] 회의실 화상회의 장비 교체 수요 조사 결과 (2026. 4. 10.) 1부']},
+                   [{'name': '총무2026-0315_화상회의장비_수요조사결과.hwp'}, {'name': '화상회의장비_견적서.txt'}])
+    assert d['attachments'][1:] == ['화상회의장비 견적서 1부'], d['attachments']          # 근거 공문은 제목으로 이미 있음 → 견적서만 붙인다
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
+                    'attachments': ['[기획2026-158] 창립 50주년 기념 리브랜딩 계획 (2026. 6. 30.) 1부', '시연_메모 1부']},
+                   [{'name': '근거공문.hwp', 'text': '문서번호 기획2026-158 시행일 2026. 6. 30.'}, {'name': '시연_메모.txt'}])
+    assert d['attachments'] == ['[기획2026-158] 창립 50주년 기념 리브랜딩 계획 (2026. 6. 30.) 1부', '시연 메모 1부'], d['attachments']
     print('llm selftest OK')
