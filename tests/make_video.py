@@ -18,7 +18,8 @@ if not os.path.exists(raw):
     binf = open(os.path.join(src, 'frames.bin'), 'rb')
     p = subprocess.Popen(['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', '30', '-c:v', 'mjpeg', '-i', '-',
                           '-vf', 'format=yuv420p', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', raw], stdin=subprocess.PIPE)
-    k, last, n_out = 0, None, int((fr[-1]['t'] + 1.0) * 30)
+    # 화면이 멈추면 프레임이 안 들어오므로 마지막 표시(end)까지 마지막 프레임을 늘린다 — 안 그러면 맺음 장면이 1초 만에 잘린다
+    k, last, n_out = 0, None, int((max(fr[-1]['t'], max(x['t'] for x in m['marks'])) + 1.0) * 30)
     for i in range(n_out):
         t = i / 30
         while k + 1 < len(fr) and fr[k + 1]['t'] <= t:
