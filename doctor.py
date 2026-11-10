@@ -84,6 +84,17 @@ def main():
             say(p['ok'], f"AI 호출 ({llm.display()})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
     else:
         say(None, f"AI: {CFG['llm_kind']}", llm.display())
+    for k, h in llm.HOSTED.items():          # 외부 API(NVIDIA · OpenRouter) — 없어도 앱은 동작
+        if CFG[h['key']]:
+            say(True, f"{h['tag']} 키 (AI 선택에서 전환 가능)", ', '.join(CFG[h['models']]))
+            if '--ping' in sys.argv:
+                keep = llm.provider()
+                llm.set_provider(k)
+                p = llm.ping()
+                llm.set_provider(keep)
+                say(True if p['ok'] else None, f"{h['tag']} 호출 ({llm.chosen_models()[k]})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
+        else:
+            say(None, f"{h['tag']} 키 없음", f"DeepSeek 등으로 바꿔 시연하려면 .env에 {h['env']}")
     if os.name == 'nt':
         pp = [p for p in (r'C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE', r'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE') if os.path.exists(p)]
         say(True if pp else None, 'PowerPoint (PPT 미리보기 그림)', '있음' if pp else '없으면 장별 SVG로 미리보기')
@@ -92,7 +103,7 @@ def main():
         fonts = [os.path.expanduser('~/Library/Fonts'), '/Library/Fonts', os.path.expanduser('~/.local/share/fonts'), '/usr/share/fonts']
         has = any('KoPub' in f for d in fonts if os.path.isdir(d) for f in os.listdir(d))
         say(True if has else None, 'KoPub돋움체 (PPT 글꼴)', '설치됨' if has else '없으면 PPT를 열 때 다른 글꼴로 보입니다 — 무료 KoPub돋움체 설치 권장')
-        say(None, '한글(.hwp) 열어 보기', 'macOS는 한컴오피스 Mac 또는 한컴독스(웹)로 확인 — 앱의 「미리보기」는 파일에서 읽은 문단을 보여 줌')
+        say(None, '한글(.hwp) 열어 보기', '앱의 「미리보기」가 실제 파일을 그려 보여 줌(rhwp). 최종 확인은 한컴오피스 Mac·한컴독스(웹)')
     py = 'python' if os.name == 'nt' else 'python3'
     print('\n' + (f'준비 완료 — {py} kosoe.py' if ok_all else '❌ 항목을 먼저 해결하세요'))
     return 0 if ok_all else 1

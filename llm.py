@@ -12,8 +12,10 @@ import shutil
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from core import CFG, DATA
@@ -25,6 +27,28 @@ WRITING_RULES = """코스콤 보고 문법을 지킨다.
 - [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.
 - 날짜는 '2026. 10. 28' 형식.
 - 장마다 항목 2~4개. 하위 설명이 필요하면 children에 1~2개."""
+
+def writing_rules(style=None):
+    """작성 규칙. 스킬에 문체(style)가 없으면 코스콤 보고 문법, 있으면 대표 문서에서 잰 그 문서 종류의 문체."""
+    import checks
+    st = checks.norm_style(style)
+    if st == checks.DEFAULT_STYLE:
+        return WRITING_RULES
+    end = {'noun': "명사형 종결(~함, ~임, ~ 추진, ~ 예정). '~합니다/~다.'로 끝내지 않는다.",
+           'plain': "서술형 평서문으로 끝낸다(~한다. ~이다. ~할 수 있다.). 개조식(~함, ~임)으로 줄이지 않는다.",
+           'polite': "서술형 존댓말로 끝낸다(~합니다. ~입니다.). 개조식(~함, ~임)으로 줄이지 않는다.",
+           'any': '문장 끝 형태는 자료에 적힌 그대로 따른다.'}[st['ending']]
+    length = f"한 항목은 {st['max_len']}자 이내." if st['max_len'] else '길이 제한 없음. 조·항 하나를 한 항목에 온전히 쓴다.'
+    date = '날짜는 자료에 적힌 형식 그대로.' if st['date'] == 'any' else f"날짜는 '{checks.fmt_date(2026, 10, 28, st['date'])}' 형식."
+    return f"""이 문서 종류의 문체를 지킨다(대표 문서에서 잰 기준이며, 보고서용 개조식 문법보다 우선한다).
+- {end}
+- {length}
+- 항목 앞 라벨은 2~6자(예: 기간, 대상). 조·항 번호(①, 1.)는 본문에 그대로 두고 라벨은 빈 문자열로 둔다.
+- 숫자·고유명사·날짜는 사용자 요청과 첨부 자료에 있는 것만 쓴다. 없는 사실은 지어내지 말고 '(확인 필요)'로 둔다.
+- [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.
+- {date}
+- 장(조)마다 항목 1~6개. 원문의 항·호 단위를 따른다."""
+
 
 BP_SCHEMA = '{"title": str, "sections": [{"heading": str, "items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]]} | null}]}'
 
@@ -42,25 +66,29 @@ class Masker:
     def __init__(self, kinds):
         self.kinds = [k for k in kinds if k in MASK_RX]
         self.map = {}
+        self.lock = threading.Lock()      # 스킬 검증은 초안 여러 개를 동시에 쓰면서 Masker 하나를 같이 쓴다
 
     def mask(self, text):
         if not text:
             return text
-        for k in self.kinds:
-            def sub(m, k=k):
-                v = m.group(0)
-                for tok, orig in self.map.items():
-                    if orig == v:
-                        return tok
-                tok = f'[{k}{sum(1 for t in self.map if t.startswith("[" + k)) + 1}]'
-                self.map[tok] = v
-                return tok
-            text = MASK_RX[k].sub(sub, text)
+        with self.lock:
+            for k in self.kinds:
+                def sub(m, k=k):
+                    v = m.group(0)
+                    for tok, orig in self.map.items():
+                        if orig == v:
+                            return tok
+                    tok = f'[{k}{sum(1 for t in self.map if t.startswith("[" + k)) + 1}]'
+                    self.map[tok] = v
+                    return tok
+                text = MASK_RX[k].sub(sub, text)
         return text
 
     def unmask(self, obj):
         s = json.dumps(obj, ensure_ascii=False)
-        for tok, orig in self.map.items():
+        with self.lock:
+            pairs = list(self.map.items())
+        for tok, orig in pairs:
             s = s.replace(tok, orig)
         return json.loads(s)
 
@@ -155,7 +183,7 @@ def _call_cli(system, user, model=None):
     exe = cli_path()
     if not exe:
         raise RuntimeError('Claude CLI 없음')
-    args = [exe, '-p', '--output-format', 'json', '--model', model or CFG['llm_model'], '--system-prompt', system,
+    args = [exe, '-p', '--output-format', 'json', '--model', model or CFG['cli_model'], '--system-prompt', system,
             '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence']
     if CFG.get('llm_effort'):
         args += ['--effort', CFG['llm_effort']]
@@ -177,17 +205,19 @@ def _call_cli(system, user, model=None):
 
 
 # ───────────── BizCoder CLI(사내 LLM) ─────────────
-# 회사 계정으로 로그인된 BizCoder(opencode 계열 코딩 에이전트)로 사내 모델(기본 DeepSeek V4 Flash)을 부른다.
+# 회사 계정으로 로그인된 BizCoder(opencode 계열 코딩 에이전트)로 사내 모델을 부른다. 모델은 DeepSeek V4 Flash 하나로 고정한다.
 # Claude Code·Codex 이어받기(MCP·스킬·지침)·프로젝트 설정·자동 업데이트를 끄고 도구를 모두 막은 채, 빈 작업 폴더에서
 # 요청을 표준입력으로 넘겨 순수한 '모델 호출'로만 쓴다 — 첨부 속 글이 도구(명령·파일)를 부르지 못하게.
+BIZ_MODEL, BIZ_LABEL = 'bizrouter/deepseek/deepseek-v4-flash-0731', 'DeepSeek V4 Flash'
 BIZ_DIR = os.path.join(DATA, 'llm-bizcoder')
 os.makedirs(BIZ_DIR, exist_ok=True)
+BIZ_TOOLS_OFF = {'tools': {'*': False}}
 BIZ_ENV = {'OPENCODE_DISABLE_CLAUDE_CODE': '1', 'OPENCODE_DISABLE_CODEX': '1', 'BIZCODER_DISABLE_CLAUDE_CODE': '1',
            'BIZCODER_DISABLE_CODEX': '1', 'OPENCODE_DISABLE_CLAUDE_CODE_PROMPT': '1', 'OPENCODE_DISABLE_CODEX_PROMPT': '1',
            'OPENCODE_DISABLE_CLAUDE_CODE_MEMORY': '1', 'OPENCODE_DISABLE_CODEX_SKILLS': '1', 'OPENCODE_DISABLE_PROJECT_CONFIG': '1',
            'OPENCODE_DISABLE_AUTOUPDATE': '1', 'BIZCODER_DISABLE_WORKFLOWS': '1', 'OPENCODE_PURE': '1',
-           'OPENCODE_CONFIG_CONTENT': json.dumps({'tools': {'*': False}})}
-_biz = {'p': None, 't': 0, 'v': None, 'm': None, 'mt': 0}
+           'OPENCODE_CONFIG_CONTENT': json.dumps(BIZ_TOOLS_OFF)}
+_biz = {'p': None, 't': 0, 'v': None, 'think': 0}      # think = 생각 끄기 옵션이 거부된 시각(그 뒤 10분은 옵션 없이 부른다)
 
 
 def bizcoder_path():
@@ -224,27 +254,10 @@ def bizcoder_status(force=False):
     return v
 
 
-def bizcoder_models():
-    """회사 관리자가 내 계정에 허용한 모델(bizcoder models = bizcoder policy 의 「쓸 수 있는 모델」, 10분 캐시)."""
-    if _biz['m'] is not None and time.time() - _biz['mt'] < 600:
-        return _biz['m']
-    exe, ms = bizcoder_path(), []
-    if exe:
-        try:
-            r = subprocess.run([exe, 'models'], capture_output=True, timeout=60, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
-            ms = [l.strip() for l in r.stdout.decode('utf-8', 'replace').splitlines() if l.strip().startswith('bizrouter/')]
-        except Exception:
-            pass
-    _biz.update(m=ms, mt=time.time())
-    return ms
-
-
-def _call_bizcoder(system, user, model=None):
-    exe = bizcoder_path()
-    if not exe:
-        raise RuntimeError('BizCoder CLI 없음')
-    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', model or CFG['bizcoder_model'], '--dir', BIZ_DIR],
-                       input=f'{system}\n\n{user}'.encode('utf-8'), capture_output=True, timeout=300, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
+def _biz_run(exe, prompt, conf):
+    """BizCoder 한 번 실행 → (답, 답이 없을 때의 오류 글)."""
+    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', BIZ_MODEL, '--dir', BIZ_DIR], input=prompt.encode('utf-8'), capture_output=True,
+                       timeout=300, env={**os.environ, **BIZ_ENV, 'OPENCODE_CONFIG_CONTENT': json.dumps(conf)}, cwd=BIZ_DIR)
     ev = []
     for line in r.stdout.decode('utf-8', 'replace').splitlines():
         if line.startswith('{'):
@@ -253,9 +266,32 @@ def _call_bizcoder(system, user, model=None):
             except json.JSONDecodeError:
                 pass
     text = ''.join(e['part'].get('text', '') for e in ev if e.get('type') == 'text' and isinstance(e.get('part'), dict))
+    msg = '' if text else (next((json.dumps(e.get('error') or e.get('part'), ensure_ascii=False) for e in ev if e.get('type') == 'error'), '')
+                           or (r.stderr.decode('utf-8', 'replace') or '응답 없음')[-200:])
+    return text, msg
+
+
+def _biz_conf(deep=False):
+    """BizCoder 설정: 도구는 모두 막고 모델의 '생각(추론)' 수준(KOSOE_BIZCODER_REASONING)을 준다.
+    BizCoder에 이 모델의 --variant 가 없어 공급자 옵션으로 준다. default 면 옵션 없이 모델 기본(가장 느림).
+    deep(대표 문서 분석): 생각을 끄거나 낮추면 스킬 초안이 거칠어져 그 뒤 검증이 자주 떨어진다(실측) → off · low 여도 모델 기본으로 둔다."""
+    level = CFG['bizcoder_reasoning']
+    effort = None if deep and level in ('off', 'low') else {'off': 'none', 'low': 'low', 'medium': 'medium', 'high': 'high'}.get(level)
+    return {**BIZ_TOOLS_OFF, **({'provider': {'bizrouter': {'models': {BIZ_MODEL.partition('/')[2]: {'options': {'reasoning': {'effort': effort}}}}}}} if effort else {})}
+
+
+def _call_bizcoder(system, user):
+    exe = bizcoder_path()
+    if not exe:
+        raise RuntimeError('BizCoder CLI 없음')
+    prompt = f'{system}\n\n{user}'
+    conf = _biz_conf(getattr(_fast, 'deep', False)) if time.time() - _biz['think'] > 600 else BIZ_TOOLS_OFF
+    text, msg = _biz_run(exe, prompt, conf)
+    if not text and conf != BIZ_TOOLS_OFF:          # 생각 옵션을 받지 않게 바뀌었을 수 있다 — 옵션 없이 한 번 더, 되면 10분 동안은 옵션 없이
+        text, msg = _biz_run(exe, prompt, BIZ_TOOLS_OFF)
+        if text:
+            _biz['think'] = time.time()
     if not text:
-        msg = next((json.dumps(e.get('error') or e.get('part'), ensure_ascii=False) for e in ev if e.get('type') == 'error'), '')
-        msg = msg or (r.stderr.decode('utf-8', 'replace') or '응답 없음')[-200:]
         if '로그인' in msg or 'login' in msg.lower() or 'auth' in msg.lower():
             _biz.update(t=0, v=None)
             msg += ' → 터미널에서 bizcoder login'
@@ -265,7 +301,8 @@ def _call_bizcoder(system, user, model=None):
 
 # ───────────── Ollama(사내망 모델 서버) ─────────────
 # 사내 모델 서버(Ollama · 인증 프록시 뒤의 Ollama · ollama.com API)를 /api/chat 으로 부른다.
-# 서버 주소·API 키·모델은 사용자가 화면 설정에서 정한다(ctx['cfg'] = {'url', 'key', 'model'}). 키는 Bearer 헤더로만 보낸다.
+# 서버 주소·API 키·모델(OLLAMA)은 화면의 AI 선택 창에서 정한다(app: /api/ai/ollama). 키는 Bearer 헤더로만 보낸다.
+OLLAMA = {'url': CFG['ollama_url'], 'key': CFG['ollama_key'], 'model': CFG['ollama_model']}
 _ol = {}
 
 
@@ -311,7 +348,7 @@ def ollama_status(cfg, force=False):
             if caps is not None and 'completion' not in caps:
                 v = {'ready': False, 'detail': f'쓸 수 없는 모델: {model} — 서버에 모델 파일이 없거나 글쓰기 모델이 아닙니다(서버에서 ollama pull {model})'}
             else:
-                v = {'ready': True, 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 문서가 PC 밖(ollama.com)으로 나갑니다' if ms[name] else '')}
+                v = {'ready': True, 'cloud': ms[name], 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 요청이 PC 밖(ollama.com)으로 나가 가림 처리합니다' if ms[name] else '')}
     except Exception as e:
         v = {'ready': False, 'detail': _ol_err(e, cfg['url'])}
     _ol[k] = (time.time(), v)
@@ -343,55 +380,226 @@ def _call_ollama(system, user, cfg, json_mode=False):
     return text
 
 
+# ───────────── 제공자(provider) — 실행 중에 화면에서 바꿀 수 있다 ─────────────
+# claude_cli : 각자의 Claude Code 구독 CLI (기본)
+# bizcoder / ollama : 사내 LLM — 회사 BizCoder 계정(DeepSeek V4 Flash 고정) · 사내망 Ollama 서버
+# nvidia / openrouter : 외부 API(OpenAI 호환) — 사내에 올릴 오픈 모델(DeepSeek 등)을 노트북 시연에서 대신 부르는 용도
+#   nvidia = build.nvidia.com 무료 체험 엔드포인트(평가용), openrouter = 유료 · 일부 무료 모델
+# anthropic / openai_compat : API 키 · 사내 모델 엔드포인트      rule : AI 없이 규칙 기반만
+import threading
+_fast = threading.local()
+OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
+# 외부 API(OpenAI 호환) — 사내 GPU에 올릴 오픈 모델을 노트북 시연에서 대신 부른다. 요청이 밖으로 나가므로 항상 가림 처리한다.
+HOSTED = {
+    'nvidia': {'name': 'NVIDIA API (build.nvidia.com)', 'tag': 'NVIDIA API', 'url': CFG['nv_base'] + '/chat/completions', 'key': 'nv_key', 'models': 'nv_models',
+               'env': 'KOSOE_NVIDIA_API_KEY', 'menv': 'KOSOE_NVIDIA_MODELS',
+               'note': 'NVIDIA가 올려 둔 오픈 모델(DeepSeek 등)을 무료 체험 엔드포인트로 부릅니다(평가용 · 요청 수 제한). 사내 GPU에 같은 모델을 올렸을 때를 대신 보여 줍니다. '
+                       '요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'},
+    'openrouter': {'name': 'OpenRouter API', 'tag': 'OpenRouter API', 'url': OPENROUTER_URL, 'key': 'or_key', 'models': 'or_models',
+                   'env': 'KOSOE_OPENROUTER_API_KEY', 'menv': 'KOSOE_OPENROUTER_MODELS',
+                   'note': '사내 GPU에 올릴 오픈 모델(DeepSeek 등)을 시연에서는 OpenRouter로 부릅니다. 요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'},
+}
+_active = {'kind': CFG['llm_kind'], 'model': {'openrouter': CFG['or_model'], 'nvidia': (CFG['nv_models'] or [''])[0]}}
+KIND_NAME = {'claude_cli': 'Claude Code CLI (구독)', 'nvidia': HOSTED['nvidia']['name'], 'openrouter': HOSTED['openrouter']['name'],
+             'bizcoder': 'BizCoder (사내 LLM)', 'ollama': 'Ollama (사내망 모델 서버)', 'anthropic': 'Claude API',
+             'openai_compat': 'OpenAI 호환(사내 모델)', 'rule': '규칙 기반(AI 없음)'}
+
+
+def provider():
+    return _active['kind']
+
+
+def set_provider(kind, model=''):
+    if kind not in KIND_NAME:
+        raise ValueError('없는 AI 제공자: ' + str(kind))
+    if kind in HOSTED and model:
+        h = HOSTED[kind]
+        if model not in CFG[h['models']]:
+            raise ValueError(f"목록에 없는 모델: {model} — .env의 {h['menv']}에 추가하세요")
+        _active['model'][kind] = model
+    _active['kind'] = kind
+    return state()
+
+
+def chosen_models():
+    """외부 API별로 고른 모델(저장용)."""
+    return dict(_active['model'])
+
+
+def model_name(fast=False):
+    k = provider()
+    if k == 'claude_cli':
+        return (CFG['cli_fast'] if fast else '') or CFG['cli_model']
+    if k in HOSTED:
+        return _active['model'][k]
+    if k == 'bizcoder':
+        return BIZ_MODEL
+    if k == 'ollama':
+        return OLLAMA['model']
+    if k == 'rule':
+        return '규칙 기반'
+    return (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
+
+
+def _ol_outside():
+    """Ollama 요청이 회사 밖으로 나가는가 — ollama.com API 를 직접 부르거나, 서버가 ollama.com 에서 도는 클라우드 모델로 넘기는 경우.
+    서버 확인이 안 될 때도 나간다고 본다(확인 안 된 채 가림 없이 시작한 작업이 서버가 살아난 뒤 그대로 나가지 않게)."""
+    st, host = ollama_status(OLLAMA), urllib.parse.urlparse(OLLAMA['url']).hostname or ''
+    return host == 'ollama.com' or host.endswith('.ollama.com') or not st['ready'] or bool(st.get('cloud'))
+
+
+def external():
+    """요청 내용이 제3자 API로 나가는 제공자인가(가림 처리 대상)."""
+    k = provider()
+    return k in HOSTED or (k == 'ollama' and _ol_outside())
+
+
+def internal():
+    """실제 사내 LLM(회사 BizCoder 계정 · 사내망 Ollama)인가 — 화면에 '사내 LLM 자리(시연)' 대신 '사내 LLM'으로 보인다."""
+    return provider() in ('bizcoder', 'ollama') and not external()
+
+
 def available():
-    if CFG['llm_kind'] == 'rule':
+    k = provider()
+    if k == 'rule':
         return False
-    if CFG['llm_kind'] == 'claude_cli':
+    if k == 'claude_cli':
         return cli_status()['ready']
+    if k in HOSTED:
+        return bool(CFG[HOSTED[k]['key']])
+    if k == 'bizcoder':
+        return bizcoder_status()['ready']
+    if k == 'ollama':
+        return ollama_status(OLLAMA)['ready']
     return bool(CFG['llm_key'])
 
 
+def _short(m):
+    return m.split('/')[-1]
+
+
 def display():
-    if CFG['llm_kind'] == 'claude_cli':
-        return f"Claude {CFG['llm_model']} (구독 CLI)"
-    if CFG['llm_kind'] == 'rule':
+    k = provider()
+    if k == 'claude_cli':
+        return f"Claude {CFG['cli_model']} (구독 CLI)"
+    if k in HOSTED:
+        return f"{_short(_active['model'][k])} ({HOSTED[k]['tag']})"
+    if k == 'bizcoder':
+        return f'BizCoder · {BIZ_LABEL}'
+    if k == 'ollama':
+        return f"Ollama · {OLLAMA['model'] or '모델 미설정'}"
+    if k == 'rule':
         return '규칙 기반'
     return CFG['llm_model']
 
 
-import threading
-_fast = threading.local()
-_prov = threading.local()          # ctx['provider'] · ctx['cfg'] — 'bizcoder' · 'ollama' 면 이 호출은 그 사내 LLM으로
+def ollama_public():
+    """화면에 보여 줄 Ollama 설정 — API 키는 빼고 있는지 · 끝 4자리만."""
+    k = OLLAMA.get('key') or ''
+    return {'url': OLLAMA['url'], 'model': OLLAMA['model'], 'has_key': bool(k), 'key_hint': ('…' + k[-4:]) if len(k) >= 8 else ('설정됨' if k else '')}
+
+
+def state(probe=False):
+    """화면의 AI 선택 창에 보여 줄 제공자 목록과 현재 선택.
+    사내 LLM(BizCoder 로그인 · Ollama 서버)의 연결 확인은 시간이 걸릴 수 있어, 지금 쓰는 제공자이거나 probe(선택 창을 열 때)일 때만 한다."""
+    cli = cli_status()
+    out = [{'kind': 'claude_cli', 'name': KIND_NAME['claude_cli'], 'ready': cli['ready'], 'model': CFG['cli_model'],
+            'detail': cli['detail'] if cli['ready'] else (cli['detail'] or '로그인 필요'), 'note': '각자 구독으로 로그인한 Claude Code CLI를 부릅니다.'}]
+    for k, h in HOSTED.items():
+        out.append({'kind': k, 'name': h['name'], 'ready': bool(CFG[h['key']]), 'model': _active['model'][k], 'models': CFG[h['models']],
+                    'detail': '키 있음' if CFG[h['key']] else f".env에 {h['env']} 필요", 'note': h['note']})
+    k = provider()
+    # 로그인됨은 10분 캐시 그대로, 안 됨으로 남아 있으면 창을 열 때마다 다시 본다(방금 bizcoder login 한 것이 바로 보이게)
+    biz = bizcoder_status(force=probe and not (_biz['v'] or {}).get('ready')) if probe or k == 'bizcoder' else (_biz['v'] or {'ready': False, 'detail': ''})
+    out.append({'kind': 'bizcoder', 'name': KIND_NAME['bizcoder'], 'ready': biz['ready'], 'model': BIZ_MODEL, 'detail': biz['detail'],
+                'note': f'회사 BizCoder 계정으로 사내 모델({BIZ_LABEL} 고정)을 부릅니다. 먼저 터미널에서 bizcoder login.'})
+    ol = ollama_status(OLLAMA) if probe or k == 'ollama' else {'ready': False, 'detail': ''}
+    out.append({'kind': 'ollama', 'name': KIND_NAME['ollama'], 'ready': ol['ready'], 'model': OLLAMA['model'], 'detail': ol['detail'], 'ollama': ollama_public(),
+                'note': '사내망 Ollama 서버(인증 프록시 · ollama.com API 포함)를 부릅니다. 주소 · API 키 · 모델은 아래에서 정합니다.'})
+    if CFG['llm_key'] and CFG['llm_kind'] in ('anthropic', 'openai_compat'):
+        out.append({'kind': CFG['llm_kind'], 'name': KIND_NAME[CFG['llm_kind']], 'ready': True, 'model': CFG['llm_model'], 'detail': CFG['llm_base'], 'note': ''})
+    out.append({'kind': 'rule', 'name': KIND_NAME['rule'], 'ready': True, 'model': '', 'detail': '', 'note': 'AI 없이 규칙으로만 초안을 만듭니다(품질 낮음).'})
+    return {'kind': provider(), 'display': display(), 'connected': available(), 'providers': out}
+
+
+def _post(url, body, headers, timeout=150):
+    """JSON POST. 연결 끊김·429·5xx는 한 번 더 시도한다."""
+    last = ''
+    for attempt in range(2):
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_ctx()) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode(errors='ignore')[:300]
+            last = f'HTTP {e.code}: {msg}'
+            if e.code not in (429, 500, 502, 503, 504):
+                break
+        except Exception as e:            # 연결 재설정 등
+            last = str(e)[:200]
+        time.sleep(1.5)
+    raise RuntimeError(last)
 
 
 def call(system, user, max_tokens=2500, fast=False, json_mode=False):
     """모델 한 번 호출 → (텍스트, ms). 실패하면 예외. fast=True(또는 ctx['fast'])면 가벼운 일용 빠른 모델."""
     fast = fast or getattr(_fast, 'on', False)
     t0 = time.time()
-    p, pcfg = getattr(_prov, 'name', ''), getattr(_prov, 'cfg', None) or {}
-    if p == 'bizcoder':
-        return _call_bizcoder(system, user, pcfg.get('model')), int((time.time() - t0) * 1000)
-    if p == 'ollama':
-        return _call_ollama(system, user, pcfg, json_mode), int((time.time() - t0) * 1000)
-    model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
-    if CFG['llm_kind'] == 'claude_cli':
+    k = provider()
+    model = model_name(fast)
+    if k == 'bizcoder':
+        return _call_bizcoder(system, user), int((time.time() - t0) * 1000)
+    if k == 'ollama':
+        return _call_ollama(system, user, OLLAMA, json_mode), int((time.time() - t0) * 1000)
+    if k == 'claude_cli':
         return _call_cli(system, user, model), int((time.time() - t0) * 1000)
-    if CFG['llm_kind'] == 'openai_compat':
-        url = CFG['llm_base'] + '/v1/chat/completions'
-        body = {'model': model, 'max_tokens': max_tokens, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
-        headers = {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['llm_key']}
-    else:
-        url = CFG['llm_base'] + '/v1/messages'
-        body = {'model': model, 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]}
-        headers = {'content-type': 'application/json', 'x-api-key': CFG['llm_key'], 'anthropic-version': '2023-06-01'}
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=120, context=_ctx()) as r:
-            data = json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f'HTTP {e.code}: {e.read().decode(errors="ignore")[:200]}')
-    text = data['choices'][0]['message']['content'] if CFG['llm_kind'] == 'openai_compat' else ''.join(b.get('text', '') for b in data['content'])
-    return text, int((time.time() - t0) * 1000)
+    if k in HOSTED:
+        h = HOSTED[k]
+        body = {'model': model, 'max_tokens': max(max_tokens, 1200) + CFG['or_reason_budget'],     # 추론 토큰이 답 토큰을 잡아먹지 않게 여유
+                'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+        headers = {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG[h['key']]}
+        if k == 'openrouter':
+            headers['x-title'] = 'kosoe-office'
+            if CFG['or_reasoning'] in ('low', 'medium', 'high'):
+                body['reasoning'] = {'effort': CFG['or_reasoning']}
+            elif CFG['or_reasoning'] == 'off':
+                body['reasoning'] = {'enabled': False}
+        else:
+            if CFG['nv_thinking'] == 'off':         # 추론을 켜 두면 답 토큰을 다 써서 빈 응답이 나온다(시험에서 확인)
+                body['chat_template_kwargs'] = {'thinking': False}
+            if CFG['nv_extra']:
+                body.update(json.loads(CFG['nv_extra']))
+        data = _post(h['url'], body, headers)
+        if data.get('error'):
+            e = data['error']
+            raise RuntimeError(str(e.get('message') if isinstance(e, dict) else e)[:200])
+        text = (data.get('choices') or [{}])[0].get('message', {}).get('content') or ''
+        if not text.strip():
+            raise RuntimeError('빈 응답(추론만 하고 답이 없음) — ' + ('KOSOE_OPENROUTER_REASONING=off 또는 low 로 바꿔 보세요' if k == 'openrouter'
+                                                           else 'KOSOE_NVIDIA_THINKING=off 로 두세요'))
+        _usage.append({'kind': k, 'model': model, 'cost': (data.get('usage') or {}).get('cost'), 'tokens': (data.get('usage') or {}).get('total_tokens')})
+        del _usage[:-200]
+        return text, int((time.time() - t0) * 1000)
+    if k == 'openai_compat':
+        data = _post(CFG['llm_base'] + '/v1/chat/completions',
+                     {'model': model, 'max_tokens': max_tokens, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]},
+                     {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['llm_key']})
+        return data['choices'][0]['message']['content'], int((time.time() - t0) * 1000)
+    data = _post(CFG['llm_base'] + '/v1/messages',
+                 {'model': model, 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]},
+                 {'content-type': 'application/json', 'x-api-key': CFG['llm_key'], 'anthropic-version': '2023-06-01'})
+    return ''.join(b.get('text', '') for b in data['content']), int((time.time() - t0) * 1000)
+
+
+_usage = []          # 외부 API 호출별 비용(시연 중 확인용). NVIDIA 체험 엔드포인트는 비용이 없다.
+
+
+def usage():
+    cost = sum(u['cost'] or 0 for u in _usage)
+    by = {}
+    for u in _usage:
+        by[u.get('kind', 'openrouter')] = by.get(u.get('kind', 'openrouter'), 0) + 1
+    return {'calls': len(_usage), 'cost_usd': round(cost, 6), 'by': by}
 
 
 def call_json(system, user, max_tokens=2500, fast=False):
@@ -404,11 +612,14 @@ def call_json(system, user, max_tokens=2500, fast=False):
 
 def ping():
     """키·네트워크 확인용 최소 호출."""
+    k = provider()
+    st = bizcoder_status(True) if k == 'bizcoder' else ollama_status(OLLAMA, True) if k == 'ollama' else None      # 사내 LLM은 지금 상태를 다시 확인한다
     if not available():
-        return {'ok': False, 'error': cli_status(True)['detail'] if CFG['llm_kind'] == 'claude_cli' else 'KOSOE_LLM_API_KEY 없음'}
+        return {'ok': False, 'error': cli_status(True)['detail'] if k == 'claude_cli' else '규칙 기반 설정' if k == 'rule' else
+                f".env에 {HOSTED[k]['env']} 없음" if k in HOSTED else st['detail'] if st else 'KOSOE_LLM_API_KEY 없음'}
     try:
         t, ms = call('짧게 답한다.', '"ok" 한 단어만 출력', 10)
-        return {'ok': True, 'ms': ms, 'model': display()}
+        return {'ok': True, 'ms': ms, 'model': display(), 'reply': t.strip()[:40]}
     except Exception as e:
         return {'ok': False, 'error': str(e)[:200]}
 
@@ -416,26 +627,21 @@ def ping():
 def _try(ctx, fn_llm, fn_rule):
     ctx = ctx or {}
     mk = ctx.get('mk')
-    prov, pcfg = ctx.get('provider') or '', ctx.get('cfg') or {}
     meta = {'mode': 'rule', 'model': '규칙 기반', 'label': '규칙 기반(보조)', 'ms': 0, 'masked': 0}
-    # Ollama는 미리 묻지 않고 바로 부른다(꺼져 있으면 곧바로 연결 오류 → 규칙 기반으로)
-    if ctx.get('use_llm', True) and (bizcoder_status()['ready'] if prov == 'bizcoder' else prov == 'ollama' or available()):
+    if ctx.get('use_llm', True) and available():
         try:
-            _fast.on = bool(ctx.get('fast'))
-            _prov.name, _prov.cfg = prov, pcfg
+            _fast.on, _fast.deep = bool(ctx.get('fast')), bool(ctx.get('deep'))
             out, ms = fn_llm(mk.mask if mk else (lambda x: x))
             if mk:
                 out = mk.unmask(out)
-            model = pcfg.get('model') or (CFG['bizcoder_model'] if prov == 'bizcoder' else CFG['llm_model'])
-            return out, {'mode': 'llm', 'model': model, 'label': ctx.get('label') or display(),
-                         'ms': ms, 'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
+            return out, {'mode': 'llm', 'model': model_name(bool(ctx.get('fast'))), 'kind': provider(), 'label': ctx.get('label') or display(), 'ms': ms,
+                         'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
         except Exception as e:
             meta['error'] = str(e)[:200]
         finally:
-            _fast.on = False
-            _prov.name, _prov.cfg = '', None
-    elif prov == 'bizcoder':
-        meta['error'] = bizcoder_status()['detail']
+            _fast.on = _fast.deep = False
+    elif ctx.get('use_llm', True) and provider() in ('bizcoder', 'ollama'):      # 사내 LLM이 준비 안 됨 — 이유를 화면에 보인다
+        meta['error'] = (bizcoder_status() if provider() == 'bizcoder' else ollama_status(OLLAMA))['detail']
     t0 = time.time()
     out = fn_rule()
     meta['ms'] = int((time.time() - t0) * 1000)
@@ -462,7 +668,13 @@ def _clean_bp(bp, outline):
         else:
             tb = None
         secs.append({'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb})
-    return {'title': _plain(bp.get('title')) or '문서', 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+    return {'title': _title(bp.get('title')), 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+
+
+def _title(v):
+    """제목은 한 줄. AI가 표지 글 전체(여러 줄)를 제목에 넣으면 첫 줄만 쓴다 — 제목 칸·문서함·받기 파일 이름에 쓰이는 값이다."""
+    first = next((l.strip() for l in re.split(r'[\r\n]+', _plain(v)) if l.strip()), '')
+    return re.sub(r'\s+', ' ', first)[:80] or '문서'
 
 
 def _attach_text(files, M):
@@ -526,7 +738,31 @@ def form_blueprint(template, request_text, files, ctx=None):
     return _try(ctx, llm, lambda: build(template['name'], {}))
 
 
+def _fill_blueprint(form, request_text, files, ctx=None):
+    """서식 채우기형 양식(계약서 등): 조항은 서식에 있으므로 칸에 넣을 값만 요청·자료에서 찾는다."""
+    import fillform
+
+    def rule():
+        return fillform.to_blueprint(form, {}, {})
+
+    def llm(M):
+        sys = ('너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 모양이 정해진 서식의 칸에 넣을 값을 요청과 첨부 자료에서 찾아 적는다.\n'
+               '- 조항·본문 문장은 서식에 들어 있으므로 쓰지 않는다. 칸의 값만 적는다.\n'
+               '- 요청·자료에 없는 값은 빈 문자열로 둔다. 금액·날짜·사람 이름·주소를 짐작하거나 지어내지 않는다.\n'
+               '- [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.\n'
+               '- 금액은 자료의 숫자를 표의 단위에 맞춰 쉼표와 함께 적는다(예: 단위가 천원이면 2,400만원 → 24,000). 단위 환산이 확실하지 않으면 비워 둔다.\n'
+               '- 날짜는 칸 설명의 형식을 따른다.')
+        user = (f"서식: {form.get('name')} — {form.get('purpose', '')}\n\n채울 칸:\n{fillform.prompt_spec(form)}\n\n"
+                f"요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
+                '출력 형식: {"fields": {칸 key: 값}, "rows": {표 key: [{열 이름: 값}]}}')
+        out, ms = call_json(sys, user, 2000)
+        return fillform.to_blueprint(form, out.get('fields') or {}, out.get('rows') or {}), ms
+    return _try(ctx, llm, rule)
+
+
 def blueprint(template, request_text, files, ctx=None):
+    if template.get('fill'):
+        return _fill_blueprint(template['fill'], request_text, files, ctx)
     if template.get('form_fields'):
         return form_blueprint(template, request_text, files, ctx)
     outline = json.loads(template['outline'])
@@ -552,9 +788,10 @@ def blueprint(template, request_text, files, ctx=None):
     def llm(M):
         fx = '\n'.join(f"- [{f.get('heading')}] {f['text']}" for f in fixed) or '(없음)'
         rules = template.get('rules') or ''
-        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{WRITING_RULES}\n{rules}'
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{writing_rules(template.get("style"))}\n{rules}'
         user = (f"템플릿: {template['name']} ({template['desc']})\n구성(이 순서와 제목을 그대로): {outline}\n"
-                f"고정 문구(그대로 넣는다):\n{fx}\n\n요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
+                f"고정 문구(글자 그대로 넣는다. 그 안에 숫자로 끝나지 않는 [칸 이름]이 있으면 그 칸만 요청·자료의 값으로 바꾸고, 값이 없으면 [칸 이름]을 그대로 둔다):\n{fx}\n\n"
+                f"요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
                 f"첨부에 표가 있으면 가장 맞는 장의 table에 그대로 넣는다(숫자 변경 금지, 필요하면 증감 열만 추가).\n출력 형식: {BP_SCHEMA}")
         out, ms = call_json(sys, user, 3000)
         return _clean_bp(out, outline), ms
@@ -562,7 +799,7 @@ def blueprint(template, request_text, files, ctx=None):
 
 
 # ───────────── 3. 채팅으로 고치기 ─────────────
-def edit(bp, instruction, files, ctx=None):
+def edit(bp, instruction, files, ctx=None, style=None, extra=''):
     def rule():
         b = json.loads(json.dumps(bp))
         secs = b['sections']
@@ -590,7 +827,7 @@ def edit(bp, instruction, files, ctx=None):
         return {'reply': f"**{tgt['heading']}**에 지시를 메모로 넣었습니다. (규칙 기반 보조 모드 — AI가 연결되면 문장으로 반영합니다)", 'blueprint': b}
 
     def llm(M):
-        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{WRITING_RULES}'
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{writing_rules(style)}' + (f'\n{extra}' if extra else '')
         user = (f'현재 설계도:\n{M(json.dumps(bp, ensure_ascii=False))}\n\n지시: {M(instruction)}\n\n{_attach_text(files, M)}\n\n'
                 f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA}}}')
         out, ms = call_json(sys, user, 3500)
@@ -599,16 +836,19 @@ def edit(bp, instruction, files, ctx=None):
 
 
 # ───────────── 4. 긴 항목 줄이기(검수 자동 수정) ─────────────
-def shorten(texts, ctx=None):
+def shorten(texts, ctx=None, style=None):
+    import checks
+    n = checks.norm_style(style)['max_len'] or 90
+
     def rule():
         out = []
         for t in texts:
             s = re.split(r'(?:으며|이며|하며|였으며|고,|,)\s', t)[0]
-            out.append(s if len(s) <= 90 else s[:88] + '…')
+            out.append(s if len(s) <= n else s[:n - 2] + '…')
         return out
 
     def llm(M):
-        out, ms = call_json(f'긴 보고서 항목을 90자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{WRITING_RULES}',
+        out, ms = call_json(f'긴 항목을 {n}자 이내 한 문장으로 줄인다. 뜻과 숫자는 유지.\n{writing_rules(style)}',
                             f'항목들: {M(json.dumps(texts, ensure_ascii=False))}\n출력 형식: {{"items": [str]}} (같은 개수, 같은 순서)', 1500, fast=True)
         items = out.get('items') or []
         if len(items) != len(texts):
@@ -618,8 +858,8 @@ def shorten(texts, ctx=None):
 
 
 # ───────────── 5. 기존 문서에서 템플릿 추출 ─────────────
-def extract(docs, ctx=None):
-    """docs = [{'name','text','heads'}] → 구성·고정 문구·채울 칸·작성 규칙."""
+def extract(docs, ctx=None, prose=False):
+    """docs = [{'name','text','heads'}] → 구성·고정 문구·채울 칸·작성 규칙. prose=True면 보고서가 아닌 서술형 문서로 분석한다."""
     def rule():
         hints = [d.get('heads') or [] for d in docs]
         base = hints[0] if hints else []
@@ -637,10 +877,64 @@ def extract(docs, ctx=None):
         body = '\n\n'.join(f"=== 문서 {i + 1}: {M(d['name'])} ===\n장 제목 후보: {d.get('heads')}\n{M(d['text'][:5000])}" for i, d in enumerate(docs))
         sys = ('너는 사내 문서 양식 분석가다. 같은 종류의 문서 여러 건에서 공통 구성(목차), 매번 똑같이 들어가는 고정 문구, '
                '문서마다 바뀌는 채울 칸, 작성 규칙을 뽑아 템플릿 초안을 만든다. 개인 이름·연락처·고객사 실명은 예시에서 가린다.')
+        if prose:           # 보고서가 아닌 문서(계약서·공문·규정 등): 그 문서의 구성과 문장이 기준
+            sys += ('\n이 문서는 개조식 보고서가 아니라 서술형 문서(계약서·공문·규정·안내문 등)다. 그 문서의 구성과 문장을 기준으로 분석한다: '
+                    '조·항 제목을 outline으로 삼고, 조항 문장은 고쳐 쓰거나 요약하지 말고 원문 그대로 fixed에 옮긴다.\n'
+                    '고정 문구 안에서 문서마다 바뀌는 값(회사명·날짜·금액·업무명 등)은 지우지 말고 그 자리에 [칸 이름]을 적는다'
+                    '(예: "[고객사명](이하 "갑"이라 한다)", "[기본계약 체결일] 체결한"). 칸 이름은 숫자로 끝내지 않는다.')
         user = (f'{body}\n\n출력 형식: {{"name_suggest": str, "outline": [str], "fixed": [{{"heading": str, "text": str}}], '
                 f'"fields": [{{"name": str, "desc": str, "example": str, "kind": "칸"|"표"}}], "rules": [str]}}')
         out, ms = call_json(sys, user, 2500)
         for k in ('outline', 'fixed', 'fields', 'rules'):
             out.setdefault(k, [])
         return out, ms
-    return _try(ctx, llm, rule)
+    return _try({**(ctx or {}), 'deep': True}, llm, rule)      # 분석은 깊이 생각하게(_biz_conf)
+
+
+if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 옵션이 거부되면 옵션 없이 다시 부르고, 그 뒤 10분은 옵션 없이 부른다
+    seen, reject = [], True
+    bizcoder_path = lambda: 'bizcoder'      # noqa: E731
+
+    def _biz_run(exe, prompt, conf):        # noqa: F811
+        seen.append('provider' in conf)
+        return ('', '옵션 거부') if reject and 'provider' in conf else ('답', '')
+    CFG['bizcoder_reasoning'] = 'default'
+    assert _biz_conf() == BIZ_TOOLS_OFF                                            # default = 옵션 없음(모델 기본)
+    CFG['bizcoder_reasoning'] = 'high'
+    assert _biz_conf(deep=True) == _biz_conf() != BIZ_TOOLS_OFF                    # 분석(deep)도 높게 준 수준은 그대로
+    CFG['bizcoder_reasoning'] = 'off'
+    assert _biz_conf(deep=True) == BIZ_TOOLS_OFF                                   # 분석은 off 여도 모델 기본으로 생각
+    assert _biz_conf() == {'tools': {'*': False}, 'provider': {'bizrouter': {'models': {'deepseek/deepseek-v4-flash-0731': {'options': {'reasoning': {'effort': 'none'}}}}}}}
+    assert _call_bizcoder('s', 'u') == '답' and seen == [True, False]              # 거부 → 옵션 없이 다시
+    assert _call_bizcoder('s', 'u') == '답' and seen == [True, False, False]       # 그 뒤 10분은 옵션 없이 한 번에
+    _biz['think'], reject = 0, False
+    assert _call_bizcoder('s', 'u') == '답' and seen[-1] is True             # 평소: 옵션을 주고 한 번에
+    reject = True
+    _biz_run = lambda exe, prompt, conf: ('', '로그인이 필요해요')                  # noqa: E731
+    try:
+        _call_bizcoder('s', 'u')
+        raise AssertionError('오류가 나야 한다')
+    except RuntimeError as e:
+        assert 'bizcoder login' in str(e)
+    # 가림 대상: 사내 LLM(BizCoder · 사내망 Ollama)은 가리지 않고, 회사 밖으로 나가는 Ollama 는 가린다
+    st = {'ready': True}
+    ollama_status = lambda cfg, force=False: st      # noqa: E731
+    _active['kind'] = 'bizcoder'
+    assert internal() and not external()
+    _active['kind'], OLLAMA['url'] = 'ollama', 'http://10.10.1.20:11434'
+    assert internal() and not external()                                           # 사내망 서버의 모델
+    st = {'ready': True, 'cloud': True}
+    assert external() and not internal()                                           # ollama.com 에서 도는 클라우드 모델
+    st = {'ready': False}
+    assert external()                                                              # 서버 확인이 안 됨 → 안전한 쪽(가림)
+    st, OLLAMA['url'] = {'ready': True}, 'https://ollama.com'
+    assert external()                                                              # ollama.com API 를 직접 부름
+    _active['kind'] = 'nvidia'
+    assert external() and not internal()
+    # 가림: 여러 스레드가 Masker 하나를 같이 써도 같은 값은 같은 토큰, 다른 값은 다른 토큰 — 되돌리면 원문
+    from concurrent.futures import ThreadPoolExecutor
+    mk, src = Masker(['휴대전화번호']), [f'연락처 010-{1000 + i % 7}-{5000 + i % 7}' for i in range(200)]
+    with ThreadPoolExecutor(8) as ex:
+        out = list(ex.map(mk.mask, src))
+    assert len(mk.map) == 7 and mk.unmask(out) == src and not any('010-' in o for o in out)
+    print('llm selftest OK')

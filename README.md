@@ -68,7 +68,7 @@ AI가 초안을 써 줘도 **형식마다 다시 쓰기**(PPT·웹·한글), **�
 <td><img src="docs/images/06-web.png" alt="웹슬라이드"><br><b>웹슬라이드</b> — 전사 <code>koscom-webslide</code> 엔진. 차트 · 편집 모드가 든 단일 HTML</td>
 </tr>
 <tr>
-<td><img src="docs/images/04-hwp.png" alt="한글"><br><b>한글</b> — 전사 <code>koscom-hwp-report</code> 렌더러. 결재란 · □ㅇ- 단계 · 표</td>
+<td><img src="docs/images/04-hwp.png" alt="한글"><br><b>한글</b> — 전사 <code>koscom-hwp-report</code> 렌더러가 만든 실제 <code>.hwp</code>를 브라우저 안에서 그려 보여 줍니다</td>
 <td><img src="docs/images/07-inspect.png" alt="검수"><br><b>검수</b> — 원본 120만원 ≠ PPT 100만원. 읽지 못한 파일은 「판정 불가」로 남깁니다</td>
 </tr>
 <tr>
@@ -125,6 +125,7 @@ Python 패키지, Java, Git, GitHub 로그인, 스킬 저장소, 전사 공용 �
 2. 양식 카드를 고릅니다. `전사` 카드는 전사 공용 스킬이, `팀 · 부서 · 나만` 카드는 그 스킬을 상속한 스킬이 만듭니다. 카드를 누르면 그 양식으로 만든 샘플(가상 내용)의 쪽 · 장 그림이 뜹니다.
 3. **초안 만들기** → 채팅으로 고치거나 설계도를 직접 고칩니다.
 4. 형식(한글 · PPT · 웹)을 골라 **문서 만들기** → 받기 · 미리보기 · 공유 범위 설정.
+5. 한글 **미리보기**는 만들어진 `.hwp` 파일을 브라우저 안에서 양식 그대로 그립니다(실패하면 양식을 본뜬 화면으로 대체). **한컴 뷰어로 열기** · **PowerPoint로 열기**를 누르면 실제 파일이 이 PC의 프로그램으로 열립니다.
 
 결과 파일마다 어떤 엔진과 스킬 버전으로 만들었는지 남습니다(예: `koscom-hwp-report@19bd93b · sales-common@1.0.0 ← sales-pack@1.5.1`).
 
@@ -143,6 +144,10 @@ Python 패키지, Java, Git, GitHub 로그인, 스킬 저장소, 전사 공용 �
 5. **④ 검증** — 대표 문서에서 만든 과제를 스킬 사용 / 미사용으로 작성해 7개 기준으로 채점합니다.
 6. **⑤ 등록** — 모든 기준을 통과하면 버튼이 열리고, 브랜치 · 커밋 · PR이 만들어집니다.
 
+**보고서가 아닌 문서도 됩니다.** 계약서 · 공문처럼 개조식 보고서가 아닌 문서를 올리면, ② 분석에서 그 문서의 문체(종결 형태 · 날짜 형식 · 항목 길이)를 코드가 재서 스킬에 적습니다. ④ 검증의 「보고 문법」 기준은 「문체 — 대표 문서 기준」으로 바뀌고, 그 스킬로 문서를 쓸 때의 작성 규칙 · 검수 · 자동 수정도 같은 기준을 따릅니다. 조항처럼 틀은 같고 값만 바뀌는 고정 문구는 바뀌는 자리를 `[칸 이름]`으로 적어 두면, 칸을 채운 문장도 고정 문구를 지킨 것으로 봅니다. 문서 모양은 전사 한글 · PPT · 웹 양식 그대로입니다(계약서 전용 서식은 아님).
+
+**검증을 통과하지 못해도 등록할 수 있습니다.** ④ 리포트 아래의 **⚠️ 미통과 항목이 있어도 등록**을 누르고 사유를 적으면 됩니다. 미통과 항목과 사유는 PR · 스킬 파일(`verification`) · `SKILL.md`에 남고 스킬 목록에 「검증 미통과 등록」으로 표시됩니다. 스킬 파일 검사 오류(스키마 · 상속 · 잠금)와 보안(개인정보로 보이는 값) 미통과는 강제로 넘길 수 없습니다.
+
 스킬 파일 형식과 상속 규칙은 [스킬 저장소 README](https://github.com/humanist96/kosoe-office-skills#readme)에 있습니다.
 
 ### 4. 스킬 고치기 · 승인 · 복구
@@ -151,6 +156,26 @@ Python 패키지, Java, Git, GitHub 로그인, 스킬 저장소, 전사 공용 �
 - 승인권자의 **승인함**에서 승인하면 PR이 병합되고 버전 태그가 붙습니다.
 - 그 스킬로 만든 문서를 열면 「새 기준으로 다시 만들기」 알림이 뜹니다.
 - 스킬 상세의 버전 목록에서 **이 버전으로 복구 요청**을 누르면 이전 내용으로 되돌리는 PR이 열립니다.
+
+### 5. AI 바꾸기 (Claude Code CLI ↔ NVIDIA API · OpenRouter ↔ 사내 LLM)
+
+화면 위쪽의 **🤖 AI 표시**를 누르면 AI를 고르는 창이 열립니다. 고른 값은 이 PC에 저장되고 다음 요청부터 적용됩니다.
+
+| 선택 | 쓰는 곳 | 준비 |
+|---|---|---|
+| Claude Code CLI (구독) | 기본값 | `python kosoe.py login` |
+| NVIDIA API (build.nvidia.com) | 사내 GPU에 올릴 오픈 모델(DeepSeek 등)로도 같은 결과가 나오는지 **무료 체험 엔드포인트**로 보여 줄 때 | `.env`에 `KOSOE_NVIDIA_API_KEY` |
+| OpenRouter API | 같은 목적. 유료 모델과 일부 무료 모델 | `.env`에 `KOSOE_OPENROUTER_API_KEY` |
+| BizCoder (사내 LLM) | 회사 BizCoder 계정으로 사내 모델(DeepSeek V4 Flash 고정)을 부를 때 | 터미널에서 `bizcoder login` |
+| Ollama (사내망 모델 서버) | 사내망 Ollama 서버(인증 프록시 · ollama.com API 포함)의 모델을 부를 때 | 창 안에서 서버 주소 · API 키 · 모델 입력 |
+| 규칙 기반 | AI 없이 동작 확인 | 없음 |
+
+- 모델은 창 안의 목록에서 고릅니다. 목록은 `.env`의 `KOSOE_NVIDIA_MODELS` · `KOSOE_OPENROUTER_MODELS`로 바꿉니다.
+- **NVIDIA API**는 무료이지만 체험 약관이 붙습니다: 시험 · 평가용만(운영 사용 금지), 기밀 · 개인정보 입력 금지, 요청 수 제한, 예고 없이 중단될 수 있음. 인기 모델은 대기열이 길어 느립니다 — 2026-11-10 시험에서 `deepseek-ai/deepseek-v4.1-flash`는 응답이 시작될 때까지 70~85초를 기다렸고, 같은 엔드포인트의 `nvidia/nemotron-3-ultra-550b-a55b`는 1초 안에 시작했습니다.
+- **OpenRouter**의 `deepseek/deepseek-v4.1-flash`는 **유료**입니다(입력 100만 토큰당 약 $0.05, 출력 약 $0.57 — 문서 1건을 끝까지 만드는 데 1~2센트). 이름이 `:free`로 끝나는 모델만 무료이고, 하루 요청 수 제한이 있으며 붐빌 때는 429로 거절되기도 합니다(그러면 규칙 기반으로 넘어갑니다). 창 아래에 이번 실행의 호출 수와 비용이 보입니다.
+- NVIDIA API나 OpenRouter를 고르면 요청 내용이 **외부 서비스로 나갑니다.** 그래서 망 모드와 상관없이 항상 가림 처리를 하고 보냅니다. 가상 자료만 쓰세요.
+- **BizCoder**와 **Ollama**는 실제 사내 LLM이라 폐쇄망 모드에서 가림 없이 부르고, 상단에 「사내 LLM · …」으로 보입니다. BizCoder는 도구를 모두 끄고 모델 호출로만 씁니다. Ollama는 창 안에서 서버 주소 · API 키를 넣고 **모델 불러오기**로 고릅니다(키는 `~/.kosoe`에만 저장되고 화면에는 끝 4자리만 보입니다). ollama.com에서 도는 ☁ 클라우드 모델이나 ollama.com API를 고르면 요청이 밖으로 나가므로 가림 처리를 합니다.
+- **연결 시험**을 누르면 고른 모델을 한 번 불러 응답 시간을 보여 줍니다. 시연 직전에 눌러 그날의 속도를 확인하세요.
 
 ### 명령
 
@@ -231,6 +256,31 @@ flowchart LR
 
 PPT 변환이 실패하면 경량 렌더러로, AI 호출이 실패하면 규칙 기반으로 바꿔 계속 동작하고, 화면에 대체했다고 표시합니다.
 
+#### 한글 스킬은 목적마다 따로 (서식 채우기형)
+
+한글 문서는 목적마다 모양이 전혀 다릅니다. 보고서는 개조식 문단을 조립하면 되지만, 계약서 · 공문은 조항과 서명란이 정해져 있어 보고서 스킬로 만들면 보고서 모양으로 나옵니다. 그래서 **목적별 한글 스킬**을 따로 두고, 잠금 파일에 `kind: hwp-fill`로 올립니다.
+
+```yaml
+# registry/corp.lock.yaml
+koscom-hwp-pb-contract:                 # PB 전산서비스 추가업무 이용 계약서
+  repo: humanist96/kosoe-office-skills  # 스킬 저장소의 corp/ 폴더에 있다
+  path: corp/koscom-hwp-pb-contract
+  sha: <그 폴더가 들어 있는 커밋>
+  kind: hwp-fill
+```
+
+첫 스킬은 [`corp/koscom-hwp-pb-contract`](https://github.com/humanist96/kosoe-office-skills/tree/main/corp/koscom-hwp-pb-contract)입니다. 「새 문서」의 전사 양식에 **PB 전산서비스 추가업무 이용 계약서** 카드로 보입니다(대외비 등급 — 폐쇄망 모드에서만).
+
+| | 보고서 스킬 (`koscom-hwp-report`) | 서식 채우기형 스킬 (`kind: hwp-fill`) |
+|---|---|---|
+| 방식 | 문단 블록을 조립 | 실제 문서에서 바뀌는 글만 `{{칸}}`으로 비운 서식에 값을 넣음 |
+| 설계도 | 장 · 항목 · 표를 AI가 작성 | 장 = 칸 묶음, 항목 = 칸(이름 · 값), 표 = 반복 행. 조항 문장은 서식에 있어 AI가 쓰지 않음 |
+| 양식 카드 | `registry/corp.forms.yaml` | 스킬의 `form.yaml`이 곧 전사 양식 카드 |
+| 검수 | 보고 문법 · 팩 규칙 | 필수 칸 · 칸 형식 · 표(합계 자동) |
+| 만드는 형식 | 한글 · PPT · 웹 | 그 서식의 한글 파일만 |
+
+스킬 폴더에는 `form.yaml`(칸 정의) · `templates/*.hwp`(서식) · `scripts/*.jar`(`FillRenderer`)가 있으면 됩니다. 앱은 `fillform.py`로 칸 ↔ 설계도 ↔ `values.json`을 바꿔 주기만 하므로, 새 목적의 스킬을 올릴 때 앱 코드를 고치지 않습니다. 원격에 올리기 전에는 `.env`의 `KOSOE_CORP_LOCAL=<스킬 id>=<폴더>`로 이 PC의 저장소를 바로 씁니다.
+
 ### 스킬 상속
 
 ```mermaid
@@ -244,7 +294,7 @@ flowchart TB
 
 ### AI 어댑터
 
-AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude Code 구독 CLI이고, 설정 한 줄로 Claude API · OpenAI 호환(사내 모델) · 규칙 기반으로 바꿉니다. 모델이 하는 일은 라우팅 · 설계도 작성과 수정 · 문서 분석 · 문장 줄이기이며, **검수와 채점은 코드가 파일에서 읽은 값으로** 합니다.
+AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude Code 구독 CLI이고, 화면에서 NVIDIA API · OpenRouter(DeepSeek 등) · 사내 LLM(BizCoder · Ollama) · 규칙 기반으로, 설정으로 Claude API · OpenAI 호환(사내 모델)으로 바꿉니다. 제공자가 바뀌어도 화면 · 스킬 · 엔진 · 검수는 그대로입니다. 모델이 하는 일은 라우팅 · 설계도 작성과 수정 · 문서 분석 · 문장 줄이기이며, **검수와 채점은 코드가 파일에서 읽은 값으로** 합니다.
 
 ## 설정
 
@@ -252,17 +302,24 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 
 | 변수 | 기본값 | 뜻 |
 |---|---|---|
-| `KOSOE_AI` | `claude_cli` | `claude_cli` · `anthropic` · `openai_compat` · `rule` |
+| `KOSOE_AI` | `claude_cli` | 처음 켤 때의 AI. `claude_cli` · `nvidia` · `openrouter` · `bizcoder` · `ollama` · `anthropic` · `openai_compat` · `rule`. 화면에서 바꾸면 그 값이 우선합니다 |
+| `KOSOE_NVIDIA_API_KEY` | — | build.nvidia.com 키(`nvapi-…`). `.env`에만 적습니다(Git에 올라가지 않음) |
+| `KOSOE_NVIDIA_MODELS` | `deepseek-ai/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b` | 화면에서 고를 NVIDIA 모델 목록. 첫 번째가 기본 |
+| `KOSOE_NVIDIA_THINKING` | `off` | 추론. 켜면(`on`) 추론이 답 토큰을 다 써서 빈 응답이 나올 수 있습니다 |
+| `KOSOE_OPENROUTER_API_KEY` | — | OpenRouter 키. `.env`에만 적습니다(Git에 올라가지 않음) |
+| `KOSOE_OPENROUTER_MODELS` | DeepSeek v4.1 Flash + 무료 모델 3개 (`.env.example` 참고) | 화면에서 고를 모델 목록. 첫 번째가 기본. 무료 모델 목록은 자주 바뀝니다 |
+| `KOSOE_OPENROUTER_REASONING` | `low` | 추론 강도. `off`(가장 빠름) · `low` · `medium` · `high` · `default` |
 | `KOSOE_LLM_MODEL` / `KOSOE_LLM_FAST_MODEL` | `sonnet` / `haiku` | 작성용 / 가벼운 일(추천 · 줄이기)용 모델 |
 | `KOSOE_CLAUDE_CLI` | 자동 탐색 | Claude Code CLI 경로. 1.x는 쓰지 않습니다 |
 | `KOSOE_LLM_API_KEY` / `KOSOE_LLM_BASE_URL` | — | `anthropic` · `openai_compat`일 때만 |
-| `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(시연: 같은 모델) · `bizcoder` · `ollama`(사내 LLM) · `rule`. 상단 🤖 칩에서 사용자마다 고르면 그 선택이 우선 |
-| `KOSOE_OLLAMA_URL` / `KOSOE_OLLAMA_MODEL` | `http://localhost:11434` / — | 사내 Ollama 서버와 모델의 기본값. 🤖 칩 → ⚙ 설정에서 사용자마다 주소 · API 키 · 모델을 넣습니다(모델은 서버에서 불러와 고름) |
+| `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(화면에서 고른 AI) · `rule` |
+| `KOSOE_OLLAMA_URL` / `KOSOE_OLLAMA_MODEL` | `http://localhost:11434` / — | 사내 Ollama 서버와 모델의 기본값. AI 선택 창에서 주소 · API 키 · 모델을 넣으면 그 값이 우선합니다(모델은 서버에서 불러와 고름) |
 | `KOSOE_OLLAMA_API_KEY` | — | 인증이 걸린 사내 Ollama · ollama.com API 키의 기본값(`Authorization: Bearer`). 로컬 Ollama는 비워 둡니다. 화면에서 넣은 키는 `~/.kosoe`에만 저장되고 끝 4자리만 보입니다 |
-| `KOSOE_BIZCODER_MODEL` / `KOSOE_BIZCODER_LABEL` | `bizrouter/deepseek/deepseek-v4-flash-0731` / `DeepSeek V4 Flash` | BizCoder 기본 모델과 화면 이름. ⚙ 설정에서 회사 정책이 허용한 모델로 바꿀 수 있습니다. 먼저 터미널에서 `bizcoder login` |
-| `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다) |
+| `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다). 먼저 터미널에서 `bizcoder login`. 모델은 DeepSeek V4 Flash로 고정입니다 |
+| `KOSOE_BIZCODER_REASONING` | `off` | BizCoder 모델의 생각(추론) 수준. `off`(빠름 — 초안 한 번 3~20초. 대표 문서 분석만은 모델 기본으로 생각합니다) · `low` · `medium` · `high` · `default`(모델 기본 — 가장 꼼꼼하지만 한 번 20~290초). 끄면 초안이 숫자 · 고정 문구를 빠뜨리는 일이 조금 늘어납니다(아래 「검증 현황」) |
 | `KOSOE_SKILLS_REPO` | `humanist96/kosoe-office-skills` | 스킬 정본 저장소 |
 | `KOSOE_PPT_ENGINE` | `ppt-master` | `ppt-master`(전사 스킬) · `lite`(경량 대체) |
+| `KOSOE_CORP_LOCAL` | — | 원격에 올리기 전의 전사 스킬을 이 PC 저장소에서 쓰기(시험용). `id=폴더;id=폴더`. 그 저장소의 HEAD 커밋으로 고정됩니다 |
 | `KOSOE_HOME` | `~/.kosoe` | 문서 · 기록 · 캐시 폴더 |
 | `KOSOE_PORT` | `8810` | 포트 |
 
@@ -273,16 +330,18 @@ kosoe-office/
 ├─ kosoe.py            실행 진입점 (run · doctor · login · sync · seed · reset-demo)
 ├─ app.py              Flask API — 작성 · 생성 · 검수 · 스킬 빌더 · 승인 · 시연 도우미
 ├─ core.py             설정(.env) · SQLite · 가상 조직 · 권한
-├─ llm.py              AI 어댑터 · 마스킹 · 규칙 기반 대체
+├─ llm.py              AI 어댑터(Claude Code CLI · NVIDIA API · OpenRouter · BizCoder · Ollama · 사내 모델) · 마스킹 · 규칙 기반 대체
 ├─ corp.py             전사 공용 스킬을 잠금 커밋으로 받아 두기(부분 복제)
 ├─ skills.py           스킬 저장소 — 상속 해석 · 검사 · 브랜치/PR/병합/태그 · 복구
 ├─ engines.py          설계도 → 한글 · PPT · 웹, 보고 문법 검수 · 자동 수정
 ├─ ppt_chevron.py      PPT 어댑터 (셰브론 SVG → ppt-master)
 ├─ webslide.py         웹 어댑터 (koscom-webslide)
 ├─ checks.py           팩 규칙 검수 · 원본값 대조 · 고정 문구 보장
+├─ fillform.py         서식 채우기형 한글 스킬 — form.yaml(칸) ↔ 설계도 ↔ values.json · 칸 검수
 ├─ extract.py          첨부 읽기 (xlsx · pptx · docx · pdf · hwp · html · csv · txt)
 ├─ doctor.py           설치 점검
-├─ static/             화면 (index.html · views_skills.js · 서체 · Chart.js)
+├─ static/             화면 (index.html · views_skills.js · hwp_preview.js · ai_select.js · ai_ollama.js · 서체 · Chart.js)
+│  └─ vendor/rhwp/     한글 미리보기용 HWP 렌더러 (rhwp 0.8.7, WASM)
 ├─ seed/make_seed.py   시연용 가상 자료 생성
 ├─ tests/              엔진 연기 시험 · 스킬 빌더/검수 E2E · 시연 준비 · 녹화 도구
 └─ docs/               화면 그림 · 시연 영상
@@ -296,8 +355,14 @@ kosoe-office/
 | 세 형식 생성 (전사 스킬 엔진) | ✅ | `tests/smoke_engines.py`, 결과 파일을 PowerPoint · 한컴 뷰어로 확인 |
 | 스킬 변경 → PR → 승인 → 반영 → 복구 | ✅ | 실제 GitHub PR로 확인 |
 | ★ 스킬 빌더 (분석 → 검증 → 등록) | ✅ | `tests/e2e_skillgen.py` — 스킬 사용 12/12, 미사용 3~6/12 |
+| 목적별 한글 스킬 (PB 추가업무 계약서, 서식 채우기형) | ✅ | `tests/e2e_fillform.py` — 잠금 파일에 고정된 커밋을 받아, 가상 요청으로 칸 초안(금액 단위 · 날짜 형식 맞춤, 주지 않은 값은 비움) → 채팅 수정 → 한글 생성 → 필수 칸 · 형식 · 표 검수. 결과를 한컴 뷰어와 앱 미리보기에서 원본 서식 모양으로 확인 |
+| 보고서가 아닌 문서로 스킬 만들기 · 강제 등록 | ✅ | `tests/e2e_style.py` — 가상 계약서 1건: 문체를 서술형 · `2019.03.15` · 250자로 재고, 검증 사용 4/4 vs 미사용 0/4. 사람 확인 없이 강제 등록 → 사유 없으면 거절, 사유 있으면 PR · 병합 · `verification: forced` 기록. 대표 문서 3건(보고서) 경로는 그대로 12/12 |
 | 원본값 대조 · 재검사 | ✅ | `tests/e2e_inspect.py` — 불일치 1건 탐지, 수정본 0건 |
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
+| AI 전환 (OpenRouter) | ✅ | `tests/e2e_provider.py` — DeepSeek v4.1 Flash(유료): 추천 11초 · 초안 10초 · 수정 11초, 11회 호출 약 $0.02. Nemotron 3 Ultra(무료): 초안 36초 · 수정 40초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지. 스킬 빌더 검증도 DeepSeek로 12/12 통과 |
+| AI 전환 (NVIDIA API, 무료 체험) | ✅ 느림 주의 | 같은 시험(2026-11-10). Nemotron 3 Ultra: 추천 4초 · 초안 12초 · 수정 13초, 검수 전 항목 통과. DeepSeek v4.1 Flash: 결과는 같게 나오지만 대기열 때문에 연결 시험 91초 · 추천 240초 · 초안 126초 · 수정 121초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지, 비용 $0. 스킬 빌더는 NVIDIA로 시험하지 않았습니다 |
+| 사내 LLM (BizCoder · DeepSeek V4 Flash) | ✅ | 2026-11-10. 연결 시험 3초 · 초안 5초, `tests/e2e_fillform.py` · `tests/e2e_inspect.py` · `tests/e2e_style.py --app` 통과. 스킬 빌더(`tests/e2e_skillgen.py`, 가상 대표 문서 3건, 5회씩): 생각 끔(기본값) ② 분석 12~50초 · ④ 검증 10~13초 · 자동 기준 통과 3/5, `KOSOE_BIZCODER_REASONING=default` ② 13~21초 · ④ 51~286초 · 5/5. 떨어진 2회는 「숫자 · 사실 보존」과 「고정 문구」였습니다 |
+| 사내 LLM (Ollama) | ⚠️ | 주소 · API 키 · 모델 저장, Bearer 전송, 클라우드 모델 가림은 키를 검사하는 가짜 서버로 확인했습니다. **실제 사내 Ollama 서버로는 시험하지 못했습니다** |
 | macOS | ⚠️ | 설치 스크립트 · 경로 · 미리보기를 대응했지만 **실제 맥에서는 아직 실행해 보지 못했습니다** |
 | GitHub Actions 검사 | ⏸ | 워크플로 파일은 스킬 저장소 `tools/ci/`에 보관. 켜려면 토큰에 `workflow` 권한 필요 |
 
@@ -305,7 +370,11 @@ kosoe-office/
 python tests/smoke_engines.py     # 스킬 저장소 동기화 → 상속 해석 → 한글 · PPT · 웹 생성
 python tests/e2e_skillgen.py      # 스킬 빌더 끝까지 (앱 실행 중, seed 자료 필요)
 python tests/e2e_inspect.py       # 검수 · 재검사
+python tests/e2e_fillform.py      # 목적별 한글 스킬(계약서): 칸 초안 → 수정 → 생성 → 검수 (앱 실행 중)
+python tests/e2e_style.py         # 문서 기준 문체 · 고정 문구의 칸 (앱 없이). --app 을 붙이면 계약서 예시로 분석 → 검증
+python tests/e2e_provider.py nvidia       # AI를 바꿔 추천 → 초안 → 수정 → 세 형식 생성 (끝나면 되돌림). openrouter · --model 도 가능
 python tests/make_samples.py      # 새 문서 카드 샘플 그림 → 스킬 저장소 registry/samples/ (한글 · PowerPoint 필요)
+python llm.py                     # AI 어댑터 자체검사 (BizCoder 생각 옵션 재시도 · 가림 대상 판정)
 ```
 
 ## 문제 해결
@@ -319,20 +388,27 @@ python tests/make_samples.py      # 새 문서 카드 샘플 그림 → 스킬 �
 | 첫 문서 생성이 매우 느림 | 백신의 첫 검사 때문입니다. 🎬 시연 3분 → 🔥 예열을 한 번 누릅니다 |
 | `.hwp` · `.pptx`가 `.pia`로 바뀜 | 사내 보호 도구의 정상 동작입니다. 사내 뷰어로 열립니다. 앱은 보호 도구를 해제하거나 우회하지 않습니다 |
 | `java`를 찾지 못함 | JDK/JRE 8 이상을 설치하고 터미널을 새로 엽니다. macOS는 `brew install openjdk` 후 안내대로 연결합니다 |
+| AI 선택 창에서 NVIDIA API · OpenRouter가 「준비 안 됨」 | `.env`에 `KOSOE_NVIDIA_API_KEY` · `KOSOE_OPENROUTER_API_KEY`가 없습니다. 적은 뒤 AI 선택 창을 다시 엽니다(앱을 다시 켜지 않아도 읽습니다) |
+| AI 선택 창에서 BizCoder · Ollama가 「준비 안 됨」 | BizCoder는 터미널에서 `bizcoder login`(CLI가 없으면 `npm i -g bizcoder`). Ollama는 창 안에 서버 주소 · API 키를 넣고 **모델 불러오기**로 모델을 고릅니다. 「쓸 수 없는 모델」이면 서버에서 `ollama pull <모델>` |
+| NVIDIA API로 바꾸니 초안이 1~2분 걸림 | 그 모델의 대기열이 긴 것입니다. 목록에서 다른 모델(Nemotron)을 고르거나 OpenRouter로 바꿉니다 |
+| OpenRouter 연결 시험이 402 · 429로 실패 | 402는 잔액 부족(유료 모델), 429는 무료 모델의 요청 수 제한입니다. 목록에서 다른 모델을 고르거나 OpenRouter 대시보드에서 잔액 · 한도를 확인합니다 |
 | 포트가 이미 사용 중 | `.env`의 `KOSOE_PORT`를 바꿉니다 |
 
 ## 알려진 한계와 다음 할 일
 
+- **한글 미리보기**는 한컴 프로그램이 아니라 오픈소스 렌더러(rhwp)가 그립니다. 시험한 문서에서는 한컴 뷰어와 양식 · 표 · 쪽 수가 같게 나왔지만, PC에 함초롬 글꼴이 없으면 글자 간격과 줄바꿈이 조금 다를 수 있습니다. 최종 확인은 「한컴 뷰어로 열기」로 합니다.
 - **삽화 자동 배치**는 아직 없습니다. 삽화 스킬은 버전 고정과 수신까지만 연결돼 있습니다.
 - **전사 공용 스킬 갱신**(잠금 커밋 올리기)은 화면이 없어 스킬 저장소에 직접 PR을 올립니다.
-- **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드의 AI는 상단 🤖 칩에서 BizCoder · Ollama(사내 LLM) · 같은 구독 CLI(시연) · 규칙 기반 중에 고릅니다. 망 자체를 나누지는 않습니다.
+- **SSO · DRM 복호화 · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드도 화면에서 고른 AI(구독 CLI · NVIDIA API · OpenRouter · BizCoder · Ollama)를 씁니다(`KOSOE_CLOSED_LLM=rule`이면 규칙 기반만). 망 자체를 나누지는 않습니다. NVIDIA API · OpenRouter의 DeepSeek는 **사내 GPU에 같은 모델을 올렸을 때를 대신 보여 주는 것**이고, 실제 사내 LLM은 BizCoder(회사 계정) · Ollama(사내망 서버)로, 그 밖의 사내 주소는 `openai_compat`로 연결합니다 — `openai_compat` 연결은 사내 서버가 없어 시험하지 못했습니다.
 - **시연은 GitHub 계정 1개**로 요청과 승인을 모두 합니다. 누가 요청하고 승인했는지는 커밋 · 태그 · PR 코멘트에 가상 사용자 이름으로 남깁니다. 실제 운영에서는 각자 계정과 CODEOWNERS · 브랜치 보호를 씁니다.
 - 받은 `.hwp` 양식 채우기, `.hwpx` 출력, 그룹웨어 결재 연동은 범위 밖입니다.
 
 ## 데이터와 보안
 
-- 문서 · 첨부 · 작업 기록은 **이 PC**(`~/.kosoe`)에만 저장됩니다.
+- 문서 · 첨부 · 작업 기록은 **이 PC**(`~/.kosoe`)에만 저장됩니다. 한글 미리보기도 브라우저 안에서만 그리며 파일을 밖으로 보내지 않습니다.
 - AI를 쓰면 요청 문장과 첨부에서 읽은 글이 **본인의 Claude 구독**으로 전송됩니다. 인터넷망 모드에서는 주민등록번호 · 휴대전화번호 · 계좌번호 · 고객사명을 가린 뒤 보내고, 대외비 양식 · 문서는 잠깁니다.
+- AI를 **NVIDIA API**나 **OpenRouter**로 바꾸면 같은 내용이 그 서비스(OpenRouter는 그 뒤의 모델 제공사까지)로 전송됩니다. NVIDIA 체험 약관은 기밀 · 개인정보 입력을 금지합니다. 이때는 망 모드와 상관없이 항상 가린 뒤 보냅니다. 키는 `.env`에만 두고 저장소 · 화면 · 로그에 남기지 않습니다.
+- AI를 **BizCoder**나 **Ollama**로 바꾸면 같은 내용이 회사 BizCoder 계정의 사내 모델 · 입력한 Ollama 서버로 전송됩니다. 사내 LLM이라 폐쇄망 모드에서는 가리지 않습니다. Ollama에서 ☁ 클라우드 모델이나 ollama.com 주소를 쓰면 밖으로 나가므로 항상 가린 뒤 보냅니다. Ollama API 키는 이 PC(`~/.kosoe`)에만 저장하고 로그에는 있는지만 남깁니다.
 - 스킬 저장소에는 **원문 파일을 올리지 않습니다.** 구조 · 고정 문구 · 규칙과 검증 과제(대표 문서에서 뽑은 몇 줄 포함)만 올리고, 스킬 파일에 개인정보로 보이는 값이 있으면 등록이 막힙니다. 대표 문서는 가명 · 가상 자료로 준비하세요.
 - 사내 양식은 저장소 읽기 권한이 있는 사람의 PC에만 내려옵니다.
 - 사내 보호 도구가 디스크의 `.hwp` · `.pptx`를 암호화할 수 있어, 입력 템플릿은 생성할 때마다 Git에서 새로 꺼내 쓰고 python-pptx 기본 서식은 PyPI 원본을 코드에 넣어 씁니다.
@@ -343,6 +419,7 @@ python tests/make_samples.py      # 새 문서 카드 샘플 그림 → 스킬 �
 |---|---|---|
 | [hwplib](https://github.com/neolord0/hwplib) 1.1.9 | 한글 엔진(전사 스킬에 포함) | Apache License 2.0 |
 | ppt-master ([slide-master](https://github.com/byungjunjang/slide-master) 계열) | PPT 변환(전사 스킬에 포함) | MIT License |
+| [rhwp](https://github.com/edwardkim/rhwp) `@rhwp/core` 0.8.7 | 한글 미리보기 — `.hwp`를 브라우저 안에서 SVG로 그림 (`static/vendor/rhwp`) | MIT License |
 | [Chart.js](https://www.chartjs.org/) | 화면 · 웹슬라이드 차트 | MIT License |
 | KoPub돋움체 | 화면 · 문서 서체 | 한국출판인회의 배포 서체. 배포처의 사용 조건을 따릅니다 |
 | 코쇠 캐릭터 · 코스콤 색 · 셰브론 | 화면 · 문서 | 코스콤 자산. 회사 CI 사용 기준을 따릅니다 |

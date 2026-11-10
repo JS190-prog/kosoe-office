@@ -11,6 +11,7 @@ import re
 import subprocess
 import time
 
+import checks
 import corp
 from core import CFG, DATA, ROOT, today_kr
 
@@ -221,6 +222,25 @@ def make_hwp(bp, template, people, path, jd):
     code, out = _java('Renderer', jp, path, tdir)
     if code != 0 or not os.path.exists(path):
         raise RuntimeError('한글 렌더링 실패: ' + out.strip()[-300:])
+    return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
+
+
+def make_hwp_fill(bp, info, path, jd):
+    """서식 채우기형 한글 스킬(목적별: 계약서·공문 등)로 만든다 — 설계도의 칸 값을 서식(.hwp)에 넣는다.
+    info = 양식의 skill 정보({'corp': 전사 스킬 id, 'fill': form.yaml})."""
+    import fillform
+    cid, form = info['corp'], info['fill']
+    values = fillform.to_values(bp, form)
+    vp = os.path.join(jd, 'values.json')
+    json.dump(values, open(vp, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    # 서식은 매번 git 객체에서 새로 꺼낸다(사내 보호 도구가 캐시 파일을 암호화해도 영향 없음)
+    tpl = corp.fresh_copy(cid, [form['template']], os.path.join(jd, 'templates'))[0]
+    root = corp.path(cid)
+    cp = os.pathsep.join(os.path.join(root, *p.split('/')) for p in (form.get('lib') or 'lib/hwplib-1.1.9.jar', form['jar']))
+    r = subprocess.run(['java', '-Dfile.encoding=UTF-8', '-cp', cp, 'FillRenderer', tpl, vp, path], capture_output=True, timeout=60)
+    out = r.stdout.decode('utf-8', 'replace') + r.stderr.decode('utf-8', 'replace')
+    if r.returncode != 0 or not os.path.exists(path):
+        raise RuntimeError('한글 서식 채우기 실패: ' + out.strip()[-300:])
     return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
 
 
@@ -530,7 +550,7 @@ def make_web(bp, template, people, path):
 
 # ───────────── 검수 ─────────────
 BAD_END = re.compile(r'(습니다|입니다|합니다|됩니다|했다|한다|이다|있다|없다|된다)\.?$')
-DATE_RX = re.compile(r'(20\d\d)[-./년]\s*(\d{1,2})[-./월]\s*(\d{1,2})일?')
+DATE_RX = checks.DATE_RX
 
 
 def _all_items(bp):
@@ -541,17 +561,29 @@ def _all_items(bp):
                 yield c
 
 
-def check(bp, warns=()):
-    items = list(_all_items(bp))
-    long = [it['text'] for it in items if len(it['text']) > 90]
-    ends = [it['text'] for it in items if BAD_END.search(it['text'].strip())]
-    dates = [m.group(0) for it in items for m in DATE_RX.finditer(it['text']) if m.group(0) != f'{m.group(1)}. {int(m.group(2))}. {int(m.group(3))}']
-    todo = [it['text'] for it in items if '확인 필요' in it['text'] or '반영 예정' in it['text']]
+def check(bp, warns=(), style=None, fixed=()):
+    """문체 검수. style이 없으면 코스콤 보고 문법, 있으면 그 스킬의 문체(대표 문서에서 잰 기준).
+    fixed(스킬의 고정 문구)는 글자 그대로 넣어야 하는 글이라 문체 검사에서 뺀다."""
+    st = checks.norm_style(style)
+    fixed = [str(f) for f in fixed]
+    slots = checks.slots_of(fixed)                       # 고정 문구의 [칸 이름] — 안 채워진 채 남으면 '확인 필요'
+    all_items = list(_all_items(bp))
+    items = [it for it in all_items if not checks.is_fixed_item(it['text'], fixed)]
+    out = []
+    if st['date'] != 'any':
+        dates = [m.group(0) for it in items for m in DATE_RX.finditer(it['text']) if not checks.date_ok(m, st['date'])]
+        out.append({'id': 'date', 'name': f"날짜 형식 ({checks.fmt_date(2026, 10, 28, st['date'])})", 'ok': not dates, 'detail': ', '.join(dates[:3]), 'fix': bool(dates)})
+    if st['max_len']:
+        long = [it['text'] for it in items if len(it['text']) > st['max_len']]
+        out.append({'id': 'long', 'name': f"항목 길이 {st['max_len']}자 이내", 'ok': not long, 'detail': f'{len(long)}개 초과' if long else '', 'fix': bool(long)})
+    if st['ending'] != 'any':
+        bad = BAD_END if st['ending'] == 'noun' else checks.NOUN_END
+        ends = [it['text'] for it in items if bad.search(it['text'].strip())]
+        out.append({'id': 'end', 'name': checks.ENDINGS[st['ending']], 'ok': not ends,
+                    'detail': (f'{len(ends)}개 문장형' if st['ending'] == 'noun' else f'{len(ends)}개 개조식(~함·~임)') if ends else '', 'fix': bool(ends)})
+    todo = [it['text'] for it in all_items if '확인 필요' in it['text'] or '반영 예정' in it['text'] or any(s in it['text'] for s in slots)]
     empty = [s['heading'] for s in bp['sections'] if not s['items'] and not s.get('table')]
-    return [
-        {'id': 'date', 'name': '날짜 형식 (2026. 10. 28)', 'ok': not dates, 'detail': ', '.join(dates[:3]), 'fix': bool(dates)},
-        {'id': 'long', 'name': '항목 길이 90자 이내', 'ok': not long, 'detail': f'{len(long)}개 초과' if long else '', 'fix': bool(long)},
-        {'id': 'end', 'name': '명사형 종결 (~함, ~임)', 'ok': not ends, 'detail': f'{len(ends)}개 문장형' if ends else '', 'fix': bool(ends)},
+    return out + [
         {'id': 'empty', 'name': '빈 장 없음', 'ok': not empty, 'detail': ', '.join(empty), 'fix': False},
         {'id': 'todo', 'name': '확인 필요 표시 없음', 'ok': not todo, 'detail': f'{len(todo)}곳 — 직접 확인해 주세요' if todo else '', 'fix': False},
         {'id': 'render', 'name': '한글 쪽 넘침·서식 경고 없음', 'ok': not warns, 'detail': '; '.join(warns)[:200], 'fix': any('[제목]' in w for w in warns)},
@@ -560,20 +592,36 @@ def check(bp, warns=()):
 
 ENDS = [('했습니다', '했음'), ('하였습니다', '하였음'), ('되었습니다', '되었음'), ('합니다', '함'), ('됩니다', '됨'), ('입니다', '임'),
         ('습니다', '음'), ('한다', '함'), ('된다', '됨'), ('이다', '임'), ('있다', '있음'), ('없다', '없음'), ('했다', '했음')]
+# 서술형 문체(계약서·공문 등)로 되돌릴 때: 개조식 → 평서문 / 존댓말
+ENDS_PLAIN = [('하였음', '하였다'), ('되었음', '되었다'), ('했음', '했다'), ('있음', '있다'), ('없음', '없다'), ('함', '한다'), ('됨', '된다'), ('임', '이다')]
+ENDS_POLITE = [('하였음', '하였습니다'), ('되었음', '되었습니다'), ('했음', '했습니다'), ('있음', '있습니다'), ('없음', '없습니다'), ('함', '합니다'),
+               ('됨', '됩니다'), ('임', '입니다')]
 
 
-def autofix(bp, shorten_fn, warns=()):
+def autofix(bp, shorten_fn, warns=(), style=None, fixed=()):
+    st = checks.norm_style(style)
+    fixed = [str(f) for f in fixed]
     b = json.loads(json.dumps(bp))
-    items = list(_all_items(b))
+    items = [it for it in _all_items(b) if not checks.is_fixed_item(it['text'], fixed)]
     for it in items:
-        t = DATE_RX.sub(lambda m: f'{m.group(1)}. {int(m.group(2))}. {int(m.group(3))}', it['text']).strip()
-        t = t.rstrip('.')
-        for a, z in ENDS:
-            if t.endswith(a):
-                t = t[: -len(a)] + z
-                break
+        t = it['text']
+        if st['date'] != 'any':
+            t = DATE_RX.sub(lambda m: m.group(0) if checks.date_ok(m, st['date']) else checks.fmt_date(*checks.date_parts(m), st['date']), t)
+        t = t.strip()
+        if st['ending'] == 'noun':
+            t = t.rstrip('.')
+            for a, z in ENDS:
+                if t.endswith(a):
+                    t = t[: -len(a)] + z
+                    break
+        elif st['ending'] in ('plain', 'polite'):
+            core = t.rstrip('.')
+            for a, z in (ENDS_PLAIN if st['ending'] == 'plain' else ENDS_POLITE):
+                if core.endswith(a):
+                    t = core[: -len(a)] + z + '.'
+                    break
         it['text'] = t
-    long = [it for it in items if len(it['text']) > 90]
+    long = [it for it in items if st['max_len'] and len(it['text']) > st['max_len']]
     meta = None
     if long:
         short, meta = shorten_fn([it['text'] for it in long])
@@ -631,6 +679,11 @@ def engine_of(fmt, preset=''):
     return {'corp': cid, 'name': name, 'sha': (c.get('sha') or '')[:7]}
 
 
+def fill_engine(cid):
+    c = corp.info(cid) or {}
+    return {'corp': cid, 'name': f'{cid} · 서식 채우기', 'sha': (c.get('sha') or '')[:7]}
+
+
 def make(fmt, bp, template, people, doc_id, ver):
     t0 = time.time()
     ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html'}[fmt]
@@ -638,7 +691,13 @@ def make(fmt, bp, template, people, doc_id, ver):
     jd = job_dir(doc_id, ver)
     warns = []
     engine = engine_of(fmt, template.get('preset') or '')
-    if fmt == 'hwp':
+    info = template.get('skill') or {}
+    if isinstance(info, str):
+        info = json.loads(info or '{}') or {}
+    if fmt == 'hwp' and info.get('fill'):          # 목적별 한글 스킬(서식 채우기형)
+        engine = fill_engine(info['corp'])
+        warns = make_hwp_fill(bp, info, path, jd)
+    elif fmt == 'hwp':
         warns = make_hwp(bp, template, people, path, jd)
     elif fmt == 'ppt':
         try:

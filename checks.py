@@ -73,6 +73,174 @@ def crosscheck(source_text, targets):
             'unknown': sum(1 for i in items if i['kind'] == 'unknown')}
 
 
+# ───────────── 문체(style) — 대표 문서에서 재서 스킬 양식에 적는다 ─────────────
+# 스킬에 style이 없으면 코스콤 보고 문법(명사형 종결 · 2026. 10. 28 · 90자)을 그대로 쓴다.
+# 계약서·공문·규정처럼 보고서가 아닌 문서는 그 문서의 문체를 기준으로 쓰고 검수한다.
+DEFAULT_STYLE = {'ending': 'noun', 'date': 'Y. M. D', 'max_len': 90}
+ENDINGS = {'noun': '명사형 종결 (~함, ~임)', 'plain': '서술형 종결 (~한다)', 'polite': '서술형 종결 (~합니다)', 'any': '종결 형태 자유'}
+DATE_FORMATS = ('Y. M. D', 'Y.MM.DD', 'Y-MM-DD', 'Y년 M월 D일', 'any')
+DATE_RX = re.compile(r'(20\d\d)(?:[-./]\s*(\d{1,2})[-./]\s*(\d{1,2})(?!\d)|년\s*(\d{1,2})월\s*(\d{1,2})일)')
+SENT_END = re.compile(r'[가-힣]다[.。]?[”"’\')\]]*$')            # ~한다. ~합니다.
+POLITE_END = re.compile(r'니다[.。]?[”"’\')\]]*$')
+NOUN_END = re.compile(r'(함|임|됨|했음|하였음|되었음|있음|없음)[.]?$')   # 개조식
+
+
+def norm_style(style):
+    """스킬의 style(없거나 일부만 있어도 됨) → 빠진 값은 코스콤 보고 문법으로 채운다."""
+    if isinstance(style, str):
+        import json
+        try:
+            style = json.loads(style)
+        except Exception:
+            style = None
+    st = dict(DEFAULT_STYLE)
+    for k in ('ending', 'date', 'max_len'):
+        if isinstance(style, dict) and style.get(k) is not None:
+            st[k] = style[k]
+    if st['ending'] not in ENDINGS:
+        st['ending'] = 'noun'
+    if st['date'] not in DATE_FORMATS:
+        st['date'] = 'Y. M. D'
+    try:
+        st['max_len'] = max(0, int(st['max_len']))
+    except Exception:
+        st['max_len'] = 90
+    return st
+
+
+def is_default_style(style):
+    return norm_style(style) == DEFAULT_STYLE
+
+
+def date_parts(m):
+    """DATE_RX 매치 → (연, 월, 일)"""
+    return int(m.group(1)), int(m.group(2) or m.group(4)), int(m.group(3) or m.group(5))
+
+
+def fmt_date(y, m, d, fmt):
+    return {'Y. M. D': f'{y}. {m}. {d}', 'Y.MM.DD': f'{y}.{m:02d}.{d:02d}', 'Y-MM-DD': f'{y}-{m:02d}-{d:02d}',
+            'Y년 M월 D일': f'{y}년 {m}월 {d}일'}.get(fmt)
+
+
+def _unpad(s):
+    return re.sub(r'(?<!\d)0(\d)', r'\1', re.sub(r'\s+', ' ', s))
+
+
+def date_ok(m, fmt):
+    """날짜 한 건이 이 형식인가. 기본 형식(2026. 10. 28)은 글자 그대로, 나머지는 0 채움 차이를 봐준다."""
+    if fmt == 'any':
+        return True
+    want = fmt_date(*date_parts(m), fmt)
+    return m.group(0) == want if fmt == 'Y. M. D' else _unpad(m.group(0)) == _unpad(want)
+
+
+def _date_format_of(m):
+    return next((f for f in DATE_FORMATS[:-1] if date_ok(m, f)), 'other')
+
+
+def style_label(style):
+    st = norm_style(style)
+    parts = [ENDINGS[st['ending']]]
+    parts.append('날짜 자유' if st['date'] == 'any' else '날짜 ' + fmt_date(2026, 10, 28, st['date']))
+    parts.append(f"항목 {st['max_len']}자 이내" if st['max_len'] else '길이 제한 없음')
+    return ' · '.join(parts)
+
+
+def measure_style(texts):
+    """대표 문서들의 글에서 문체를 잰다 → {'ending','date','max_len','basis'}.
+    문서가 보고 문법과 어긋나지 않으면 기본값(명사형·2026. 10. 28·90자)을 유지한다."""
+    import math
+    lines = []
+    for t in texts:
+        for l in str(t or '').splitlines():
+            s = l.strip()
+            if len(s) >= 15 and re.search(r'[가-힣]', s) and not s.startswith('<'):      # 표 칸·짧은 제목은 뺀다
+                lines.append(s)
+    st = dict(DEFAULT_STYLE)
+    basis = [f'대표 문서 {len(texts)}건']
+    if len(lines) >= 3:
+        sent = [l for l in lines if SENT_END.search(l)]
+        ratio = len(sent) / len(lines)
+        if ratio >= 0.35:
+            st['ending'] = 'polite' if sum(1 for l in sent if POLITE_END.search(l)) * 2 >= len(sent) else 'plain'
+        elif ratio > 0.1:
+            st['ending'] = 'any'
+        basis.append(f'문장 {len(lines)}개 중 서술형(~다) {ratio * 100:.0f}%')
+        over = sum(1 for l in lines if len(l) > 90) / len(lines)
+        if over > 0.1:
+            lim = int(math.ceil(max(len(l) for l in lines) * 1.2 / 50) * 50)
+            st['max_len'] = 0 if lim > 600 else lim
+        basis.append(f'90자 초과 {over * 100:.0f}%')
+    kinds = [_date_format_of(m) for t in texts for m in DATE_RX.finditer(str(t or ''))]
+    if kinds:
+        top = max(set(kinds), key=kinds.count)
+        st['date'] = top if top != 'other' and kinds.count(top) / len(kinds) >= 0.6 else 'any'
+        basis.append(f"날짜 {len(kinds)}건 중 {kinds.count(top)}건이 {'여러 형식' if st['date'] == 'any' else fmt_date(2026, 10, 28, st['date']) + ' 형식'}")
+    st['basis'] = ' · '.join(basis)
+    return st
+
+
+def validate_style(style):
+    """스킬 파일의 style 값 검사 → 오류 목록."""
+    if style is None:
+        return []
+    if not isinstance(style, dict):
+        return ['style은 ending · date · max_len 을 가진 묶음이어야 함']
+    errs = []
+    if style.get('ending') is not None and style['ending'] not in ENDINGS:
+        errs.append('style.ending은 ' + ' | '.join(ENDINGS))
+    if style.get('date') is not None and style['date'] not in DATE_FORMATS:
+        errs.append('style.date는 ' + ' | '.join(DATE_FORMATS))
+    if style.get('max_len') is not None and not (isinstance(style['max_len'], int) and style['max_len'] >= 0):
+        errs.append('style.max_len은 0(제한 없음) 이상의 정수')
+    return errs
+
+
+# ───────────── 고정 문구 안의 칸 — "[칸 이름]" ─────────────
+# 계약서 조항처럼 '틀은 같고 값만 바뀌는' 고정 문구는 바뀌는 자리를 [칸 이름]으로 적는다.
+# 칸 밖의 글자가 그대로면 고정 문구를 지킨 것으로 본다. 숫자로 끝나는 [고객사명1]은 가림 토큰이라 칸이 아니다.
+SLOT_RX = re.compile(r'\[[^\[\]\n]{1,23}[^\[\]\n\d]\]')
+
+
+def _fixed_rx(t):
+    parts = SLOT_RX.split(t)
+    if len(parts) == 1:
+        return None
+    return re.compile(r'.{1,80}?'.join(re.escape(p) for p in parts), re.S)
+
+
+def fixed_present(t, text):
+    """고정 문구 t가 text 안에 지켜졌는가(칸은 어떤 값으로 채워져도 됨)."""
+    if not t or t in text:
+        return True
+    rx = _fixed_rx(t)
+    return bool(rx and rx.search(text))
+
+
+def is_fixed_item(item_text, fixed_texts):
+    """이 항목이 고정 문구(칸을 채운 것 포함)인가 — 문체 검사에서 빼는 데 쓴다."""
+    s = item_text.strip()
+    for t in fixed_texts:
+        t = str(t or '').strip()
+        if not t:
+            continue
+        if s == t:
+            return True
+        rx = _fixed_rx(t)
+        if rx and rx.fullmatch(s):
+            return True
+    return False
+
+
+def slots_of(fixed_texts):
+    out = []
+    for t in fixed_texts:
+        for m in SLOT_RX.findall(str(t or '')):
+            if m not in out:
+                out.append(m)
+    return out
+
+
 def bp_text(bp):
     lines = [bp.get('title', '')]
     for s in bp.get('sections') or []:
@@ -109,7 +277,7 @@ def skill_checks(bp, skill):
     hit = [b for b in banned if b and b in text]
     out.append({'id': 'banned', 'name': '팩 금지어', 'ok': not hit, 'detail': ', '.join(hit), 'fix': bool(hit), 'from': 'skill'})
     fixed = skill.get('fixed') or []
-    lost = [f['text'] for f in fixed if f.get('text') and f['text'] not in text]
+    lost = [f['text'] for f in fixed if f.get('text') and not fixed_present(f['text'], text)]
     out.append({'id': 'fixed', 'name': '팩 고정 문구(글자 그대로)', 'ok': not lost, 'detail': ' / '.join(lost)[:160], 'fix': bool(lost),
                 'from': 'skill'})
     return out
@@ -122,7 +290,7 @@ def fix_skill(bp, skill):
     text = bp_text(b)
     secs = b['sections']
     for f in skill.get('fixed') or []:
-        if f.get('text') and f['text'] not in text:
+        if f.get('text') and not fixed_present(f['text'], text):
             tgt = next((s for s in secs if f.get('heading') and f['heading'] in s['heading']), secs[-1])
             tgt['items'].append({'label': '', 'text': f['text'], 'children': []})
     text = bp_text(b)
@@ -148,7 +316,7 @@ def enforce_fixed(bp, fixed):
         return b
     for f in fixed or []:
         t = (f.get('text') or '').strip()
-        if not t or t in bp_text(b):
+        if not t or fixed_present(t, bp_text(b)):      # 칸([칸 이름])을 채운 문장은 틀이 같으면 그대로 둔다
             continue
         best, ratio = None, 0.0
         for s in secs:

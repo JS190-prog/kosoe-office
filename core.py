@@ -24,8 +24,8 @@ def load_env():
                 env[k.strip()] = v.strip().strip('"').strip("'")
     get = lambda k, d='': os.environ.get(k) or env.get(k) or d
     key = get('KOSOE_LLM_API_KEY')
-    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | anthropic | openai_compat | rule
-    kind = {'cli': 'claude_cli', 'openai': 'openai_compat'}.get(kind, kind)
+    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | nvidia | openrouter | bizcoder | ollama | anthropic | openai_compat | rule
+    kind = {'cli': 'claude_cli', 'openai': 'openai_compat'}.get(kind, kind)           # + openrouter
     return {
         'home': os.path.expanduser(get('KOSOE_HOME', os.path.join('~', '.kosoe'))),
         'llm_kind': kind,
@@ -35,16 +35,28 @@ def load_env():
         'llm_effort': get('KOSOE_LLM_EFFORT', 'low' if kind == 'claude_cli' else ''),
         'llm_base': get('KOSOE_LLM_BASE_URL', 'https://api.anthropic.com').rstrip('/'),
         'claude_cli': get('KOSOE_CLAUDE_CLI'),
+        'cli_model': get('KOSOE_CLAUDE_MODEL', get('KOSOE_LLM_MODEL', 'sonnet') if kind == 'claude_cli' else 'sonnet'),
+        'cli_fast': get('KOSOE_CLAUDE_FAST_MODEL', get('KOSOE_LLM_FAST_MODEL', 'haiku') if kind == 'claude_cli' else 'haiku'),
+        'or_key': get('KOSOE_OPENROUTER_API_KEY'),
+        'or_models': [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-4-31b-it:free').split(',') if m.strip()],
+        'or_model': get('KOSOE_OPENROUTER_MODEL', '') or [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash').split(',')][0],
+        'nv_key': get('KOSOE_NVIDIA_API_KEY'),                              # build.nvidia.com 무료 체험 엔드포인트(평가용)
+        'nv_models': [m.strip() for m in get('KOSOE_NVIDIA_MODELS', 'deepseek-ai/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b').split(',') if m.strip()],
+        'nv_thinking': get('KOSOE_NVIDIA_THINKING', 'off'),                 # off(추론 끔 — 빠르고 답이 비지 않음) | on
+        'nv_base': get('KOSOE_NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1').rstrip('/'),
+        'nv_extra': get('KOSOE_NVIDIA_EXTRA_BODY', ''),                     # 요청 본문에 더할 JSON(추론 끄기 등 모델별 옵션)
+        'or_reasoning': get('KOSOE_OPENROUTER_REASONING', 'low'),          # off | low | medium | high | default
+        'or_reason_budget': int(get('KOSOE_OPENROUTER_REASON_BUDGET', '3000')),
         'claude_token': get('KOSOE_CLAUDE_TOKEN'),
-        'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),      # 폐쇄망(사내 LLM) 기본값: same(구독 CLI 시연) | bizcoder | ollama | rule — 화면에서 바꾸면 policy 표가 우선
-        'bizcoder_cli': get('KOSOE_BIZCODER_CLI'),
-        'bizcoder_model': get('KOSOE_BIZCODER_MODEL', 'bizrouter/deepseek/deepseek-v4-flash-0731'),
-        'bizcoder_label': get('KOSOE_BIZCODER_LABEL', 'DeepSeek V4 Flash'),
-        'ollama_url': get('KOSOE_OLLAMA_URL', 'http://localhost:11434').rstrip('/'),   # 사내 Ollama 서버 — 사용자가 화면 설정에서 바꿀 수 있다
+        'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),
+        'bizcoder_cli': get('KOSOE_BIZCODER_CLI'),                # 사내 LLM BizCoder — 모델은 llm.BIZ_MODEL(DeepSeek V4 Flash)로 고정
+        'bizcoder_reasoning': get('KOSOE_BIZCODER_REASONING', 'off'),      # off(생각 끔 — 빠름) | low | medium | high | default(모델 기본 — 느림)
+        'ollama_url': get('KOSOE_OLLAMA_URL', 'http://localhost:11434').rstrip('/'),   # 사내 Ollama 서버 — 화면의 AI 선택 창에서 바꿀 수 있다
         'ollama_model': get('KOSOE_OLLAMA_MODEL'),
         'ollama_key': get('KOSOE_OLLAMA_API_KEY'),           # 인증이 걸린 사내 Ollama · ollama.com API 키(Bearer). 로컬 Ollama는 비워 둔다
         'skills_repo': get('KOSOE_SKILLS_REPO', 'humanist96/kosoe-office-skills'),
         'skills_offline': get('KOSOE_SKILLS_OFFLINE', '') == '1',
+        'corp_local': get('KOSOE_CORP_LOCAL', ''),                 # 원격에 올리기 전의 전사 스킬을 이 PC 저장소에서 쓰기: id=경로;id=경로
         'ppt_engine': get('KOSOE_PPT_ENGINE', 'ppt-master'),      # ppt-master | lite
         'port': int(os.environ.get('PORT') or get('KOSOE_PORT', '8810')),
     }
