@@ -95,7 +95,7 @@
     return pages.map((p, n) => `<div class="hwpl-page"><div class="hwpl-body">${p.map((b, i) => (i ? gap(b.g) : '') + b.html).join('')}</div><div class="hwpl-no">- ${n + 1} -</div></div>`).join('');
   };
 
-  const OPEN_NAME = {hwp: '한컴 뷰어로 열기', ppt: 'PowerPoint로 열기'};
+  const OPEN_NAME = {hwp: '한컴 뷰어로 열기', ppt: 'PowerPoint로 열기', xlsx: 'Excel로 열기'};
   window.launchDoc = async (id, fmt, ver) => {
     try { await api(`/api/docs/${id}/launch`, {body: {fmt, ver}}); toast(fmt === 'hwp' ? '한글 파일을 이 PC의 프로그램(한컴 뷰어·한글)으로 열었습니다' : '파일을 이 PC의 프로그램으로 열었습니다'); } catch (e) {}
   };

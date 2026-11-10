@@ -66,7 +66,7 @@ DB_PATH = os.path.join(HOME, 'kosoe.db')
 _lock = threading.RLock()
 
 GRADE = {'c': '대외비', 'i': '사내한정', 'n': '일반'}
-FMT = {'hwp': '한글', 'ppt': 'PPT', 'web': '웹슬라이드'}
+FMT = {'hwp': '한글', 'ppt': 'PPT', 'web': '웹슬라이드', 'xlsx': '엑셀'}   # 엑셀은 서식 채우기형 전사 스킬(견적서 등)로만 만든다
 ROLE = {'user': '일반 사용자', 'lead': '팀장', 'deptAdmin': '부서 관리자', 'corpAdmin': '전사 관리자', 'security': '보안 관리자'}
 
 # 가상 조직 (SSO 자리). org = '본부/팀'

@@ -48,7 +48,7 @@ app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
 UP = os.path.join(DATA, 'uploads')
 os.makedirs(UP, exist_ok=True)
 STATIC = os.path.join(core.ROOT, 'static')
-MANUAL_MIN = {'hwp': 90, 'ppt': 180, 'web': 150}   # 손으로 만들 때 걸리는 시간(분, 가정)
+MANUAL_MIN = {'hwp': 90, 'ppt': 180, 'web': 150, 'xlsx': 40}   # 손으로 만들 때 걸리는 시간(분, 가정)
 SCOPE_STAGES = {'me': ['ci'], 'team': ['lead'], 'dept': ['dept'], 'corp': ['corp']}
 STAGE_NAME = {'ci': '자동 검사', 'lead': '팀장 승인', 'dept': '부서 관리자 승인', 'corp': '전사 관리자 승인', 'done': '등록 완료', 'rejected': '반려'}
 KIND_NAME = {'new': '스킬 등록', 'update': '스킬 변경', 'revert': '스킬 복구'}
@@ -445,7 +445,7 @@ def _fill_of(template_id):
     if not info.get('fill'):
         return None
     e = engines.fill_engine(info['corp'])
-    return {'corp': info['corp'], 'sha': e['sha'], 'name': info['fill'].get('name', ''), 'fmts': ['hwp']}
+    return {'corp': info['corp'], 'sha': e['sha'], 'name': info['fill'].get('name', ''), 'fmts': [corp.fill_fmt(info['fill'])]}
 
 
 def _tpl_for_llm(t):
@@ -561,6 +561,8 @@ def _file_text(path, fmt):
             return '\n'.join(engines.hwp_text(path))
         if fmt == 'ppt':
             return '\n'.join(engines.pptx_text(path))
+        if fmt == 'xlsx':
+            return '\n'.join(engines.xlsx_text(path))
         return checks.html_text(path)
     except Exception:
         return None
@@ -575,12 +577,14 @@ def _last_theme(doc_id, fmt):
 def _render(doc_id, ver, fmt, bp, t, u, meta, source='', theme=None):
     tr = template_for_render(t)
     theme = doc_themes.norm(theme) if theme else _last_theme(doc_id, fmt)      # 고르지 않으면 지난 버전의 테마를 잇는다
-    if fmt == 'hwp':
-        theme = doc_themes.DEFAULT                 # 한글은 회사 양식 그대로
+    if fmt in ('hwp', 'xlsx'):
+        theme = doc_themes.DEFAULT                 # 한글 · 엑셀은 회사 양식 그대로
     path, warns, ms, engine = engines.make(fmt, bp, tr, people_of(u), doc_id, ver, theme)
     cks = engines.check(bp, warns, *_style_of(t))
-    if fmt != 'hwp':
+    if fmt not in ('hwp', 'xlsx'):
         cks = [c for c in cks if c['id'] != 'render']
+    if fmt == 'xlsx':                              # 렌더러의 WARN(한 쪽 넘침 · 값 없는 칸)을 엑셀 말로 보여 준다. 자동 수정은 없다
+        cks = [{**c, 'name': '엑셀 서식 경고 없음 (한 쪽 넘침 · 빈 칸)', 'fix': False} if c['id'] == 'render' else c for c in cks]
     info = J(t['skill'], {}) or {}
     if info.get('id'):
         cks += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
@@ -614,8 +618,11 @@ def compose_generate(cid):
         return err('양식이 저장소에서 사라졌습니다. 양식을 다시 골라 주세요.', 404)
     bp = J(c['blueprint'])
     meta = J(c['llm'], {})
-    if (J(t['skill'], {}) or {}).get('fill'):       # 서식 채우기형(계약서 등)은 그 서식의 한글 파일만 만든다
-        fmts = ['hwp']
+    fill = (J(t['skill'], {}) or {}).get('fill')
+    if fill:                                       # 서식 채우기형(계약서 · 견적서 등)은 그 서식의 형식(한글 또는 엑셀)으로만 만든다
+        fmts = [corp.fill_fmt(fill)]
+    else:                                          # 엑셀은 서식 채우기형에서만
+        fmts = [f for f in fmts if f != 'xlsx']
     if c['doc_id']:
         d = row(g.con, 'select * from docs where id=?', c['doc_id'])
         ver = d['ver'] + 1
@@ -770,6 +777,22 @@ def _file_stem(title):
     s = re.sub(r'[\x00-\x1f\x7f]', ' ', first)
     s = re.sub(r'[\\/:*?"<>|]', '_', s)
     return re.sub(r'\s+', ' ', s).strip(' .')[:80] or '문서'
+
+
+@app.get('/api/docs/<did>/sheet')
+@login_required
+def doc_sheet(did):
+    """엑셀 미리보기: 결과 .xlsx의 인쇄 영역을 HTML 표로(글꼴 · 테두리 · 병합 · 그림 자리까지). 파일은 밖으로 나가지 않는다."""
+    d = _doc(did)
+    ver = int(request.args.get('ver') or d['ver'])
+    f = row(g.con, "select * from doc_files where doc_id=? and ver=? and fmt='xlsx' order by created desc", did, ver)
+    if not f or not os.path.exists(f['path']):
+        return err('엑셀 파일이 없습니다', 404)
+    import xlsx_view
+    try:
+        return ok(**xlsx_view.to_html(f['path']))
+    except Exception as e:
+        return err(f'엑셀 미리보기를 만들지 못했습니다: {str(e)[:160]} — 「받기」로 내려받아 엑셀에서 열어 주세요.', 500)
 
 
 @app.get('/api/docs/<did>/shot/<int:ver>/<name>')

@@ -11,7 +11,15 @@ TODO = '(확인 필요)'
 
 
 def _default(f):
-    return str(f.get('default') or '').replace('{year}', str(datetime.date.today().year))
+    """기본값. {year} = 올해, {today:YYYY년 MM월 DD일} = 오늘(YYYY · MM · DD · M · D 자리에 값이 들어간다)."""
+    d = datetime.date.today()
+
+    def today(m):
+        s = m.group(1) or 'YYYY-MM-DD'
+        for k, v in (('YYYY', str(d.year)), ('MM', f'{d.month:02d}'), ('DD', f'{d.day:02d}'), ('M', str(d.month)), ('D', str(d.day))):
+            s = s.replace(k, v)
+        return s
+    return re.sub(r'\{today(?::([^{}]*))?\}', today, str(f.get('default') or '')).replace('{year}', str(d.year))
 
 
 def fields_of(form):
@@ -35,9 +43,25 @@ def prompt_spec(form):
             bits.append(f"  자료에 없으면 비워 둔다(기본값 '{_default(f)}'이 들어간다)")
         out.append('\n'.join(bits))
     for h, t in tables_of(form):
-        out.append(f"- 표 {t['key']} ({h}): 열 {t['cols']}" + (f" · 단위 {t['unit']}" if t.get('unit') else '')
-                   + (f" · 필수 열 {t['required']}" if t.get('required') else '') + '\n  행마다 열 이름: 값. 합계 행은 넣지 않는다(자동 계산).')
+        # 칸과 같은 모양(- key (설명))으로 적는다 — '표 이용료'처럼 적으면 AI가 '표 '까지 key로 돌려주는 일이 있었다
+        out.append(f"- {t['key']} (표 · {h}): 열 {t['cols']}" + (f" · 단위 {t['unit']}" if t.get('unit') else '')
+                   + (f" · 필수 열 {t['required']}" if t.get('required') else '')
+                   + f"\n  rows의 key는 \"{t['key']}\". 행마다 열 이름: 값. 합계 행은 넣지 않는다(자동 계산).")
     return '\n'.join(out)
+
+
+def _table_rows(rows, t, heading, only):
+    """AI가 돌려준 rows에서 이 표의 행을 찾는다. key가 조금 달라도('표 이용료' · 장 제목) 받아 준다. only = 양식에 표가 하나뿐인가."""
+    rows = rows or {}
+    if t['key'] in rows:
+        return rows[t['key']] or []
+    norm = lambda s: re.sub(r'^표\s*', '', re.sub(r'\s+', '', str(s)))
+    for k, v in rows.items():
+        if norm(k) in (norm(t['key']), norm(heading)):
+            return v or []
+    if only and len(rows) == 1:
+        return next(iter(rows.values())) or []
+    return []
 
 
 def _clean(v):
@@ -69,9 +93,9 @@ def to_blueprint(form, fields, rows, title=None):
         tb = None
         t = s.get('table')
         if t:
-            data = (rows or {}).get(t['key']) or []
+            data = _table_rows(rows, t, s.get('heading', ''), len(tables_of(form)) == 1)
             grid = []
-            for r in data:
+            for r in data if isinstance(data, list) else []:
                 r = r if isinstance(r, dict) else dict(zip(t['cols'], r))
                 line = [_clean(r.get(c, '')) for c in t['cols']]
                 if any(line) and '합계' not in line[0].replace(' ', ''):

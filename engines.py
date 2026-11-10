@@ -116,6 +116,44 @@ def make_hwp_fill(bp, info, path, jd):
     return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
 
 
+def make_xlsx_fill(bp, info, path, jd):
+    """서식 채우기형 엑셀 스킬(목적별: 견적서 등)로 만든다 — 설계도의 칸 값을 서식(.xlsx)에 넣는다.
+    스킬의 렌더러(form.yaml의 renderer, 기본 scripts/render.py)를 이 앱의 파이썬으로 돌린다: render.py values.json 결과.xlsx --template 서식.
+    직인 같은 그림 자리는 채우지 않는다(값을 넘기지 않으므로 비어 나온다)."""
+    import sys
+    import fillform
+    cid, form = info['corp'], info['fill']
+    values = fillform.to_values(bp, form)
+    vp = os.path.join(jd, 'values.json')
+    json.dump(values, open(vp, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    # 서식과 렌더러는 매번 git 객체에서 새로 꺼낸다(고정된 커밋의 내용 그대로, 사내 보호 도구가 캐시 파일을 바꿔도 영향 없음)
+    tpl, script = corp.fresh_copy(cid, [form['template'], form.get('renderer') or 'scripts/render.py'], os.path.join(jd, 'fill'))
+    r = subprocess.run([sys.executable, script, vp, path, '--template', tpl], capture_output=True, timeout=120)
+    out = r.stdout.decode('utf-8', 'replace') + r.stderr.decode('utf-8', 'replace')
+    if r.returncode != 0 or not os.path.exists(path):
+        raise RuntimeError('엑셀 서식 채우기 실패: ' + out.strip()[-300:])
+    return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
+
+
+def xlsx_text(path):
+    """엑셀 파일의 칸 글(원본값 대조용). 숫자는 천 단위 쉼표를 붙인 모양으로도 함께 낸다."""
+    from openpyxl import load_workbook
+    lines = []
+    for ws in load_workbook(path, data_only=True).worksheets:
+        for row in ws.iter_rows(values_only=True):
+            cells = []
+            for v in row:
+                if isinstance(v, bool) or v is None:
+                    continue
+                if isinstance(v, (int, float)):
+                    cells.append(f'{v:,}' if v == int(v) else f'{v:,.2f}')
+                elif str(v).strip():
+                    cells.append(str(v).strip())
+            if cells:
+                lines.append(' | '.join(cells))
+    return lines
+
+
 def hwp_text(path):
     """한글 파일의 문단 텍스트를 뽑는다(Inspect 출력의 따옴표 안)."""
     code, out = _java('Inspect', path)
@@ -533,14 +571,18 @@ def fill_engine(cid):
 def make(fmt, bp, template, people, doc_id, ver, theme=None):
     """theme: 문서 테마(doc_themes) — PPT·웹의 겉모습만 바꾼다. 한글은 양식 그대로."""
     t0 = time.time()
-    ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html'}[fmt]
+    ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html', 'xlsx': 'xlsx'}[fmt]
     path = out_path(doc_id, ver, ext)
     jd = job_dir(doc_id, ver)
     warns = []
-    engine = engine_of(fmt)
     info = template.get('skill') or {}
     if isinstance(info, str):
         info = json.loads(info or '{}') or {}
+    if fmt == 'xlsx':                              # 엑셀은 서식 채우기형 전사 스킬(견적서 등)로만 만든다
+        if not info.get('fill') or corp.fill_fmt(info['fill']) != 'xlsx':
+            raise RuntimeError('엑셀은 엑셀 서식 채우기형 양식(견적서 등)에서만 만들 수 있습니다')
+        return path, make_xlsx_fill(bp, info, path, jd), int((time.time() - t0) * 1000), fill_engine(info['corp'])
+    engine = engine_of(fmt)
     if fmt == 'hwp' and info.get('fill'):          # 목적별 한글 스킬(서식 채우기형)
         engine = fill_engine(info['corp'])
         warns = make_hwp_fill(bp, info, path, jd)
