@@ -260,10 +260,13 @@ PPT 변환이 실패하면 경량 렌더러로, AI 호출이 실패하면 규칙
 ```yaml
 # registry/corp.lock.yaml
 koscom-hwp-pb-contract:                 # PB 전산서비스 추가업무 이용 계약서
-  repo: humanist96/koscom-hwp-pb-contract
-  sha: <고정할 커밋>
+  repo: humanist96/kosoe-office-skills  # 스킬 저장소의 corp/ 폴더에 있다
+  path: corp/koscom-hwp-pb-contract
+  sha: <그 폴더가 들어 있는 커밋>
   kind: hwp-fill
 ```
+
+첫 스킬은 [`corp/koscom-hwp-pb-contract`](https://github.com/humanist96/kosoe-office-skills/tree/main/corp/koscom-hwp-pb-contract)입니다. 「새 문서」의 전사 양식에 **PB 전산서비스 추가업무 이용 계약서** 카드로 보입니다(대외비 등급 — 폐쇄망 모드에서만).
 
 | | 보고서 스킬 (`koscom-hwp-report`) | 서식 채우기형 스킬 (`kind: hwp-fill`) |
 |---|---|---|
@@ -345,7 +348,7 @@ kosoe-office/
 | 세 형식 생성 (전사 스킬 엔진) | ✅ | `tests/smoke_engines.py`, 결과 파일을 PowerPoint · 한컴 뷰어로 확인 |
 | 스킬 변경 → PR → 승인 → 반영 → 복구 | ✅ | 실제 GitHub PR로 확인 |
 | ★ 스킬 빌더 (분석 → 검증 → 등록) | ✅ | `tests/e2e_skillgen.py` — 스킬 사용 12/12, 미사용 3~6/12 |
-| 목적별 한글 스킬 (PB 추가업무 계약서, 서식 채우기형) | ✅ 이 PC 저장소로 | `tests/e2e_fillform.py` — 가상 요청으로 칸 초안(금액 단위 · 날짜 형식 맞춤, 주지 않은 값은 비움) → 채팅 수정 → 한글 생성 → 필수 칸 · 형식 · 표 검수. 결과를 한컴 뷰어와 앱 미리보기에서 원본 서식 모양으로 확인. 스킬 저장소가 아직 원격에 없어 `KOSOE_CORP_LOCAL`로 시험했습니다 |
+| 목적별 한글 스킬 (PB 추가업무 계약서, 서식 채우기형) | ✅ | `tests/e2e_fillform.py` — 잠금 파일에 고정된 커밋을 받아, 가상 요청으로 칸 초안(금액 단위 · 날짜 형식 맞춤, 주지 않은 값은 비움) → 채팅 수정 → 한글 생성 → 필수 칸 · 형식 · 표 검수. 결과를 한컴 뷰어와 앱 미리보기에서 원본 서식 모양으로 확인 |
 | 보고서가 아닌 문서로 스킬 만들기 · 강제 등록 | ✅ | `tests/e2e_style.py` — 가상 계약서 1건: 문체를 서술형 · `2019.03.15` · 250자로 재고, 검증 사용 4/4 vs 미사용 0/4. 사람 확인 없이 강제 등록 → 사유 없으면 거절, 사유 있으면 PR · 병합 · `verification: forced` 기록. 대표 문서 3건(보고서) 경로는 그대로 12/12 |
 | 원본값 대조 · 재검사 | ✅ | `tests/e2e_inspect.py` — 불일치 1건 탐지, 수정본 0건 |
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
