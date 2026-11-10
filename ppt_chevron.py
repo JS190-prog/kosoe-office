@@ -69,7 +69,7 @@ def wrap(text, width, fs, max_lines=99):
     if len(lines) > max_lines:
         lines = lines[:max_lines]
         lines[-1] = lines[-1].rstrip()[:-1] + '…'
-    return lines
+    return lines or ['']          # 빈 글(표의 빈 칸 등)도 빈 줄 하나 — 첫 줄([0])을 쓰는 곳이 넘어지지 않게
 
 
 def fill(svg, vals):
@@ -359,6 +359,7 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 셰�
     assert (th.left, th.right, th.top, th.bottom, th.cards[0]['bx'], th.cards[1]['bx']) == (80, 1200, 256, 640, 108, 876)
     assert type(th.left) is int and int(1120 * .42) == 470
     assert deck_name('deck:warm-doc') == 'warm-doc' and deck_name('deck:없는덱') == deck_name('') == 'koscom-chevron'
+    assert wrap('', 100, 16, 1) == [''] and wrap('가 나', 100, 16) == ['가 나']      # 표의 빈 칸 → 경량 렌더러로 넘어가던 IndexError
     assert GUIDE.sub('', '<svg>\n  <g id="photo-guide">\n    <text>replace this plate</text>\n  </g>\n  <g id="title-slot"><text>{{TITLE}}</text></g></svg>') \
         == '<svg>\n  <g id="title-slot"><text>{{TITLE}}</text></g></svg>'
     print('ppt_chevron selftest OK')
