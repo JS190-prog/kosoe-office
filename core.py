@@ -42,6 +42,7 @@ def load_env():
         'bizcoder_label': get('KOSOE_BIZCODER_LABEL', 'DeepSeek V4 Flash'),
         'ollama_url': get('KOSOE_OLLAMA_URL', 'http://localhost:11434').rstrip('/'),   # 사내 Ollama 서버 — 사용자가 화면 설정에서 바꿀 수 있다
         'ollama_model': get('KOSOE_OLLAMA_MODEL'),
+        'ollama_key': get('KOSOE_OLLAMA_API_KEY'),           # 인증이 걸린 사내 Ollama · ollama.com API 키(Bearer). 로컬 Ollama는 비워 둔다
         'skills_repo': get('KOSOE_SKILLS_REPO', 'humanist96/kosoe-office-skills'),
         'skills_offline': get('KOSOE_SKILLS_OFFLINE', '') == '1',
         'ppt_engine': get('KOSOE_PPT_ENGINE', 'ppt-master'),      # ppt-master | lite

@@ -111,7 +111,14 @@ def closed_choice():
 def llm_cfg():
     s = J(_mine('llm_cfg'), {})
     return {'bizcoder': {'model': CFG['bizcoder_model'], **s.get('bizcoder', {})},
-            'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], **s.get('ollama', {})}}
+            'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], 'key': CFG['ollama_key'], **s.get('ollama', {})}}
+
+
+def public_cfg(cfg):
+    """화면으로 보내는 설정 — API 키는 빼고 있는지 · 끝 4자리만."""
+    o = dict(cfg['ollama'])
+    k = o.pop('key', '') or ''
+    return {**cfg, 'ollama': {**o, 'has_key': bool(k), 'key_hint': ('…' + k[-4:]) if len(k) >= 8 else ('설정됨' if k else '')}}
 
 
 def closed_label(c, cfg):
@@ -136,7 +143,7 @@ def ai_ctx(fast=False):
 
 def ai_state():
     c, cfg = closed_choice(), llm_cfg()
-    st = llm.bizcoder_status() if c == 'bizcoder' else llm.ollama_status(**cfg['ollama']) if c == 'ollama' else {}
+    st = llm.bizcoder_status() if c == 'bizcoder' else llm.ollama_status(cfg['ollama']) if c == 'ollama' else {}
     closed = {'closed': c, 'closed_label': closed_label(c, cfg), 'closed_ready': st.get('ready', True), 'closed_detail': st.get('detail', '')}
     if CFG['llm_kind'] == 'claude_cli':
         st = llm.cli_status()
@@ -370,8 +377,8 @@ def me():
 def closed_llm_get():
     """사내 LLM 고르기 화면: 선택지 · 지금 쓸 수 있는지 · 내 설정(BizCoder 허용 모델 목록 포함)."""
     cfg = llm_cfg()
-    biz, ol = llm.bizcoder_status(force=True), llm.ollama_status(**cfg['ollama'], force=True)
-    return ok(choice=closed_choice(), cfg=cfg, bizcoder_models=llm.bizcoder_models() if biz['ready'] else [], options=[
+    biz, ol = llm.bizcoder_status(force=True), llm.ollama_status(cfg['ollama'], force=True)
+    return ok(choice=closed_choice(), cfg=public_cfg(cfg), bizcoder_models=llm.bizcoder_models() if biz['ready'] else [], options=[
         {'id': 'bizcoder', 'label': closed_label('bizcoder', cfg), 'ready': biz['ready'],
          'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {cfg['bizcoder']['model']} · {biz['detail']}"},
         {'id': 'ollama', 'label': closed_label('ollama', cfg), 'ready': ol['ready'], 'desc': f"사내 Ollama 서버 {cfg['ollama']['url']} · {ol['detail']}"},
@@ -386,7 +393,7 @@ def closed_llm_set():
     if v not in CLOSED:
         return err('알 수 없는 선택입니다')
     cfg = llm_cfg()
-    st = llm.bizcoder_status(force=True) if v == 'bizcoder' else llm.ollama_status(**cfg['ollama'], force=True) if v == 'ollama' else {'ready': True}
+    st = llm.bizcoder_status(force=True) if v == 'bizcoder' else llm.ollama_status(cfg['ollama'], force=True) if v == 'ollama' else {'ready': True}
     if not st['ready']:
         return err(f"{closed_label(v, cfg)}를 쓸 수 없습니다: {st['detail']}")
     g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('closed_llm:' + g.u['id'], v))
@@ -399,40 +406,56 @@ def _http_url(v):
     return p.geturl().rstrip('/') if p.scheme in ('http', 'https') and p.netloc else ''
 
 
+def _host(url):
+    return urllib.parse.urlparse(url or '').netloc.lower()
+
+
 @app.post('/api/ai/settings')
 @login_required
 def llm_settings():
-    """내 사내 LLM 설정 저장: BizCoder 모델(회사 정책 허용 목록 안) · Ollama 서버 주소·모델.
-    서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게(고를 때 연결을 확인한다)."""
+    """내 사내 LLM 설정 저장: BizCoder 모델(회사 정책 허용 목록 안) · Ollama 서버 주소·API 키·모델.
+    서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게(고를 때 연결을 확인한다).
+    API 키: 비워 두면 저장된 키 유지, key_clear 면 지움. 서버(호스트)가 바뀌면 새 키를 넣지 않는 한 예전 키를 지운다 — 다른 서버로 키가 가지 않게."""
     b, cfg = request.json or {}, llm_cfg()
     bm = (b.get('bizcoder') or {}).get('model')
     if bm and bm != cfg['bizcoder']['model']:
         if bm not in llm.bizcoder_models():
             return err('회사 정책이 허용한 BizCoder 모델이 아닙니다: ' + str(bm)[:80])
         cfg['bizcoder']['model'] = bm
-    o = b.get('ollama') or {}
+    o, ol = b.get('ollama') or {}, cfg['ollama']
     if 'url' in o:
-        cfg['ollama']['url'] = _http_url(o['url'])
-        if not cfg['ollama']['url']:
-            return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다 (예: http://10.10.1.20:11434)')
+        url = _http_url(o['url'])
+        if not url:
+            return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다 (예: https://llm.사내.kr 또는 http://10.10.1.20:11434)')
+        if _host(url) != _host(ol['url']):
+            ol['key'] = ''
+        ol['url'] = url
     if 'model' in o:
-        cfg['ollama']['model'] = str(o['model'] or '').strip()[:200]
+        ol['model'] = str(o['model'] or '').strip()[:200]
+    if o.get('key_clear'):
+        ol['key'] = ''
+    if str(o.get('key') or '').strip():
+        ol['key'] = str(o['key']).strip()[:500]
     g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('llm_cfg:' + g.u['id'], json.dumps(cfg, ensure_ascii=False)))
-    log(g.u['name'], f"사내 LLM 설정 — BizCoder {cfg['bizcoder']['model']} · Ollama {cfg['ollama']['url']} {cfg['ollama']['model']}")
-    return ok(cfg=cfg, ai=ai_state())
+    log(g.u['name'], f"사내 LLM 설정 — BizCoder {cfg['bizcoder']['model']} · Ollama {ol['url']} {ol['model']} · API 키 {'있음' if ol['key'] else '없음'}")
+    return ok(cfg=public_cfg(cfg), ai=ai_state())
 
 
-@app.get('/api/ai/ollama/models')
+@app.post('/api/ai/ollama/models')
 @login_required
 def ollama_models():
-    """설정 화면의 [모델 불러오기]: 입력한 Ollama 서버의 글쓰기용 모델 목록."""
-    url = _http_url(request.args.get('url'))
+    """설정 화면의 [모델 불러오기]: 입력한 Ollama 서버(+API 키)의 글쓰기용 모델 목록.
+    키 칸이 비었으면 같은 서버일 때만 저장된 키를 쓴다. (키가 주소창·로그에 남지 않게 POST)"""
+    b = request.json or {}
+    url = _http_url(b.get('url'))
     if not url:
         return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다')
+    saved = llm_cfg()['ollama']
+    key = str(b.get('key') or '').strip() or (saved['key'] if _host(url) == _host(saved['url']) and not b.get('key_clear') else '')
     try:
-        return ok(models=llm.ollama_models(url))
+        return ok(models=llm.ollama_models({'url': url, 'key': key}))
     except Exception as e:
-        return err(f'Ollama 서버에 연결할 수 없습니다 ({url}) — {str(e)[:100]}')
+        return err(llm._ol_err(e, url))
 
 
 @app.post('/api/net')
