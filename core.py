@@ -37,9 +37,8 @@ def load_env():
         'claude_cli': get('KOSOE_CLAUDE_CLI'),
         'claude_token': get('KOSOE_CLAUDE_TOKEN'),
         'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),      # 폐쇄망(사내 LLM) 기본값: same(구독 CLI 시연) | bizcoder | ollama | rule — 화면에서 바꾸면 policy 표가 우선
-        'bizcoder_cli': get('KOSOE_BIZCODER_CLI'),
-        'bizcoder_model': get('KOSOE_BIZCODER_MODEL', 'bizrouter/deepseek/deepseek-v4-flash-0731'),
-        'bizcoder_label': get('KOSOE_BIZCODER_LABEL', 'DeepSeek V4 Flash'),
+        'bizcoder_cli': get('KOSOE_BIZCODER_CLI'),                # BizCoder 모델은 llm.BIZ_MODEL(DeepSeek V4 Flash)로 고정
+        'bizcoder_reasoning': get('KOSOE_BIZCODER_REASONING', 'off'),      # off(생각 끔 — 빠름) | low | medium | high | default(모델 기본 — 느림)
         'ollama_url': get('KOSOE_OLLAMA_URL', 'http://localhost:11434').rstrip('/'),   # 사내 Ollama 서버 — 사용자가 화면 설정에서 바꿀 수 있다
         'ollama_model': get('KOSOE_OLLAMA_MODEL'),
         'ollama_key': get('KOSOE_OLLAMA_API_KEY'),           # 인증이 걸린 사내 Ollama · ollama.com API 키(Bearer). 로컬 Ollama는 비워 둔다

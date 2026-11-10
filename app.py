@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 
 import yaml
@@ -93,7 +94,7 @@ def J(s, d=None):
 
 
 # 폐쇄망에서 쓰는 사내 LLM — 화면(🤖 표시)에서 고르면 사용자마다 policy 표의 closed_llm:<사용자 id> 에 남고, 없으면 .env 의 KOSOE_CLOSED_LLM.
-# 설정(BizCoder 모델 · Ollama 서버 주소·모델)도 사용자마다 llm_cfg:<사용자 id> 에, 없으면 .env 기본값
+# Ollama 설정(서버 주소·API 키·모델)도 사용자마다 llm_cfg:<사용자 id> 에, 없으면 .env 기본값. BizCoder 는 모델 고정(llm.BIZ_MODEL)이라 설정이 없다
 CLOSED = ('bizcoder', 'ollama', 'same', 'rule')
 
 
@@ -110,8 +111,7 @@ def closed_choice():
 
 def llm_cfg():
     s = J(_mine('llm_cfg'), {})
-    return {'bizcoder': {'model': CFG['bizcoder_model'], **s.get('bizcoder', {})},
-            'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], 'key': CFG['ollama_key'], **s.get('ollama', {})}}
+    return {'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], 'key': CFG['ollama_key'], **s.get('ollama', {})}}
 
 
 def public_cfg(cfg):
@@ -122,9 +122,7 @@ def public_cfg(cfg):
 
 
 def closed_label(c, cfg):
-    m = cfg['bizcoder']['model']
-    return {'bizcoder': 'BizCoder · ' + (CFG['bizcoder_label'] if m == CFG['bizcoder_model'] else m.split('/')[-1]),
-            'ollama': 'Ollama · ' + (cfg['ollama']['model'] or '모델 미설정'),
+    return {'bizcoder': 'BizCoder · ' + llm.BIZ_LABEL, 'ollama': 'Ollama · ' + (cfg['ollama']['model'] or '모델 미설정'),
             'same': 'Claude 구독 CLI (시연)', 'rule': '규칙 기반 (AI 없음)'}[c]
 
 
@@ -137,7 +135,7 @@ def ai_ctx(fast=False):
     if c == 'rule':
         return {'use_llm': False}
     if c in ('bizcoder', 'ollama'):
-        return {'use_llm': True, 'label': '사내 LLM · ' + closed_label(c, cfg), 'mk': None, 'fast': fast, 'provider': c, 'cfg': cfg[c]}
+        return {'use_llm': True, 'label': '사내 LLM · ' + closed_label(c, cfg), 'mk': None, 'fast': fast, 'provider': c, 'cfg': cfg.get(c)}
     return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
 
 
@@ -375,12 +373,12 @@ def me():
 @app.get('/api/ai/closed')
 @login_required
 def closed_llm_get():
-    """사내 LLM 고르기 화면: 선택지 · 지금 쓸 수 있는지 · 내 설정(BizCoder 허용 모델 목록 포함)."""
+    """사내 LLM 고르기 화면: 선택지 · 지금 쓸 수 있는지 · 내 Ollama 설정."""
     cfg = llm_cfg()
     biz, ol = llm.bizcoder_status(force=True), llm.ollama_status(cfg['ollama'], force=True)
-    return ok(choice=closed_choice(), cfg=public_cfg(cfg), bizcoder_models=llm.bizcoder_models() if biz['ready'] else [], options=[
+    return ok(choice=closed_choice(), cfg=public_cfg(cfg), options=[
         {'id': 'bizcoder', 'label': closed_label('bizcoder', cfg), 'ready': biz['ready'],
-         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {cfg['bizcoder']['model']} · {biz['detail']}"},
+         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {llm.BIZ_MODEL} · {biz['detail']}"},
         {'id': 'ollama', 'label': closed_label('ollama', cfg), 'ready': ol['ready'], 'desc': f"사내 Ollama 서버 {cfg['ollama']['url']} · {ol['detail']}"},
         {'id': 'same', 'label': closed_label('same', cfg), 'ready': llm.available(), 'desc': f"{llm.display()} — 사내 LLM 자리를 대신하는 시연용"},
         {'id': 'rule', 'label': closed_label('rule', cfg), 'ready': True, 'desc': 'AI 없이 규칙 기반 보조로만 초안을 만듭니다'}])
@@ -413,15 +411,10 @@ def _host(url):
 @app.post('/api/ai/settings')
 @login_required
 def llm_settings():
-    """내 사내 LLM 설정 저장: BizCoder 모델(회사 정책 허용 목록 안) · Ollama 서버 주소·API 키·모델.
+    """내 사내 LLM 설정 저장: Ollama 서버 주소·API 키·모델(BizCoder 는 모델 고정이라 설정이 없다).
     서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게(고를 때 연결을 확인한다).
     API 키: 비워 두면 저장된 키 유지, key_clear 면 지움. 서버(호스트)가 바뀌면 새 키를 넣지 않는 한 예전 키를 지운다 — 다른 서버로 키가 가지 않게."""
     b, cfg = request.json or {}, llm_cfg()
-    bm = (b.get('bizcoder') or {}).get('model')
-    if bm and bm != cfg['bizcoder']['model']:
-        if bm not in llm.bizcoder_models():
-            return err('회사 정책이 허용한 BizCoder 모델이 아닙니다: ' + str(bm)[:80])
-        cfg['bizcoder']['model'] = bm
     o, ol = b.get('ollama') or {}, cfg['ollama']
     if 'url' in o:
         url = _http_url(o['url'])
@@ -437,7 +430,7 @@ def llm_settings():
     if str(o.get('key') or '').strip():
         ol['key'] = str(o['key']).strip()[:500]
     g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('llm_cfg:' + g.u['id'], json.dumps(cfg, ensure_ascii=False)))
-    log(g.u['name'], f"사내 LLM 설정 — BizCoder {cfg['bizcoder']['model']} · Ollama {ol['url']} {ol['model']} · API 키 {'있음' if ol['key'] else '없음'}")
+    log(g.u['name'], f"사내 LLM 설정 — Ollama {ol['url']} {ol['model']} · API 키 {'있음' if ol['key'] else '없음'}")
     return ok(cfg=public_cfg(cfg), ai=ai_state())
 
 
@@ -1252,12 +1245,13 @@ def skillgen_evaluate(jid):
 
     def run(i, f):
         memo = memo_of(f)
-        bw, mw = llm.blueprint(with_t, memo, [], ctx)
+        with ThreadPoolExecutor(2) as ex:      # 스킬 사용 · 미사용 초안을 동시에 쓴다(차례로 쓰면 검증 시간이 두 배)
+            fw, fo = ex.submit(llm.blueprint, with_t, memo, [], ctx), ex.submit(llm.blueprint, without_t, memo, [], ctx)
+            (bw, mw), (bo, mo) = fw.result(), fo.result()
         bw = checks.enforce_fixed(bw, blocks + parent_blocks)
-        bo, mo = llm.blueprint(without_t, memo, [], ctx)
         allowed = chr(10).join(x['text'] for x in blocks + parent_blocks)
         results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo, allowed), 'without': _bp_score(bo, form, blocks, memo, allowed),
-                      'mode': mw['mode'], 'ms': mw['ms'] + mo['ms']}
+                      'mode': mw['mode'], 'ms': max(mw['ms'], mo['ms'])}
 
     th = [threading.Thread(target=run, args=(i, f)) for i, f in enumerate(files)]
     for t in th:

@@ -259,8 +259,8 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 | `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(시연: 같은 모델) · `bizcoder` · `ollama`(사내 LLM) · `rule`. 상단 🤖 칩에서 사용자마다 고르면 그 선택이 우선 |
 | `KOSOE_OLLAMA_URL` / `KOSOE_OLLAMA_MODEL` | `http://localhost:11434` / — | 사내 Ollama 서버와 모델의 기본값. 🤖 칩 → ⚙ 설정에서 사용자마다 주소 · API 키 · 모델을 넣습니다(모델은 서버에서 불러와 고름) |
 | `KOSOE_OLLAMA_API_KEY` | — | 인증이 걸린 사내 Ollama · ollama.com API 키의 기본값(`Authorization: Bearer`). 로컬 Ollama는 비워 둡니다. 화면에서 넣은 키는 `~/.kosoe`에만 저장되고 끝 4자리만 보입니다 |
-| `KOSOE_BIZCODER_MODEL` / `KOSOE_BIZCODER_LABEL` | `bizrouter/deepseek/deepseek-v4-flash-0731` / `DeepSeek V4 Flash` | BizCoder 기본 모델과 화면 이름. ⚙ 설정에서 회사 정책이 허용한 모델로 바꿀 수 있습니다. 먼저 터미널에서 `bizcoder login` |
-| `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다) |
+| `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다). 먼저 터미널에서 `bizcoder login`. 모델은 DeepSeek V4 Flash로 고정입니다 |
+| `KOSOE_BIZCODER_REASONING` | `off` | BizCoder 모델의 생각(추론) 수준. `off`(빠름 — 한 번 호출 8~20초) · `low` · `medium` · `high` · `default`(모델 기본 — 17~160초) |
 | `KOSOE_SKILLS_REPO` | `humanist96/kosoe-office-skills` | 스킬 정본 저장소 |
 | `KOSOE_PPT_ENGINE` | `ppt-master` | `ppt-master`(전사 스킬) · `lite`(경량 대체) |
 | `KOSOE_HOME` | `~/.kosoe` | 문서 · 기록 · 캐시 폴더 |

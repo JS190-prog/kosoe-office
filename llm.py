@@ -177,17 +177,19 @@ def _call_cli(system, user, model=None):
 
 
 # ───────────── BizCoder CLI(사내 LLM) ─────────────
-# 회사 계정으로 로그인된 BizCoder(opencode 계열 코딩 에이전트)로 사내 모델(기본 DeepSeek V4 Flash)을 부른다.
+# 회사 계정으로 로그인된 BizCoder(opencode 계열 코딩 에이전트)로 사내 모델을 부른다. 모델은 DeepSeek V4 Flash 하나로 고정한다.
 # Claude Code·Codex 이어받기(MCP·스킬·지침)·프로젝트 설정·자동 업데이트를 끄고 도구를 모두 막은 채, 빈 작업 폴더에서
 # 요청을 표준입력으로 넘겨 순수한 '모델 호출'로만 쓴다 — 첨부 속 글이 도구(명령·파일)를 부르지 못하게.
+BIZ_MODEL, BIZ_LABEL = 'bizrouter/deepseek/deepseek-v4-flash-0731', 'DeepSeek V4 Flash'
 BIZ_DIR = os.path.join(DATA, 'llm-bizcoder')
 os.makedirs(BIZ_DIR, exist_ok=True)
+BIZ_TOOLS_OFF = {'tools': {'*': False}}
 BIZ_ENV = {'OPENCODE_DISABLE_CLAUDE_CODE': '1', 'OPENCODE_DISABLE_CODEX': '1', 'BIZCODER_DISABLE_CLAUDE_CODE': '1',
            'BIZCODER_DISABLE_CODEX': '1', 'OPENCODE_DISABLE_CLAUDE_CODE_PROMPT': '1', 'OPENCODE_DISABLE_CODEX_PROMPT': '1',
            'OPENCODE_DISABLE_CLAUDE_CODE_MEMORY': '1', 'OPENCODE_DISABLE_CODEX_SKILLS': '1', 'OPENCODE_DISABLE_PROJECT_CONFIG': '1',
            'OPENCODE_DISABLE_AUTOUPDATE': '1', 'BIZCODER_DISABLE_WORKFLOWS': '1', 'OPENCODE_PURE': '1',
-           'OPENCODE_CONFIG_CONTENT': json.dumps({'tools': {'*': False}})}
-_biz = {'p': None, 't': 0, 'v': None, 'm': None, 'mt': 0}
+           'OPENCODE_CONFIG_CONTENT': json.dumps(BIZ_TOOLS_OFF)}
+_biz = {'p': None, 't': 0, 'v': None, 'think': 0}      # think = 생각 끄기 옵션이 거부된 시각(그 뒤 10분은 옵션 없이 부른다)
 
 
 def bizcoder_path():
@@ -224,27 +226,10 @@ def bizcoder_status(force=False):
     return v
 
 
-def bizcoder_models():
-    """회사 관리자가 내 계정에 허용한 모델(bizcoder models = bizcoder policy 의 「쓸 수 있는 모델」, 10분 캐시)."""
-    if _biz['m'] is not None and time.time() - _biz['mt'] < 600:
-        return _biz['m']
-    exe, ms = bizcoder_path(), []
-    if exe:
-        try:
-            r = subprocess.run([exe, 'models'], capture_output=True, timeout=60, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
-            ms = [l.strip() for l in r.stdout.decode('utf-8', 'replace').splitlines() if l.strip().startswith('bizrouter/')]
-        except Exception:
-            pass
-    _biz.update(m=ms, mt=time.time())
-    return ms
-
-
-def _call_bizcoder(system, user, model=None):
-    exe = bizcoder_path()
-    if not exe:
-        raise RuntimeError('BizCoder CLI 없음')
-    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', model or CFG['bizcoder_model'], '--dir', BIZ_DIR],
-                       input=f'{system}\n\n{user}'.encode('utf-8'), capture_output=True, timeout=300, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
+def _biz_run(exe, prompt, conf):
+    """BizCoder 한 번 실행 → (답, 답이 없을 때의 오류 글)."""
+    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', BIZ_MODEL, '--dir', BIZ_DIR], input=prompt.encode('utf-8'), capture_output=True,
+                       timeout=300, env={**os.environ, **BIZ_ENV, 'OPENCODE_CONFIG_CONTENT': json.dumps(conf)}, cwd=BIZ_DIR)
     ev = []
     for line in r.stdout.decode('utf-8', 'replace').splitlines():
         if line.startswith('{'):
@@ -253,9 +238,30 @@ def _call_bizcoder(system, user, model=None):
             except json.JSONDecodeError:
                 pass
     text = ''.join(e['part'].get('text', '') for e in ev if e.get('type') == 'text' and isinstance(e.get('part'), dict))
+    msg = '' if text else (next((json.dumps(e.get('error') or e.get('part'), ensure_ascii=False) for e in ev if e.get('type') == 'error'), '')
+                           or (r.stderr.decode('utf-8', 'replace') or '응답 없음')[-200:])
+    return text, msg
+
+
+def _biz_conf():
+    """BizCoder 설정: 도구는 모두 막고 모델의 '생각(추론)' 수준(KOSOE_BIZCODER_REASONING)을 준다.
+    BizCoder에 이 모델의 --variant 가 없어 공급자 옵션으로 준다. default 면 옵션 없이 모델 기본(가장 느림)."""
+    effort = {'off': 'none', 'low': 'low', 'medium': 'medium', 'high': 'high'}.get(CFG['bizcoder_reasoning'])
+    return {**BIZ_TOOLS_OFF, **({'provider': {'bizrouter': {'models': {BIZ_MODEL.partition('/')[2]: {'options': {'reasoning': {'effort': effort}}}}}}} if effort else {})}
+
+
+def _call_bizcoder(system, user):
+    exe = bizcoder_path()
+    if not exe:
+        raise RuntimeError('BizCoder CLI 없음')
+    prompt = f'{system}\n\n{user}'
+    conf = _biz_conf() if time.time() - _biz['think'] > 600 else BIZ_TOOLS_OFF
+    text, msg = _biz_run(exe, prompt, conf)
+    if not text and conf != BIZ_TOOLS_OFF:          # 생각 옵션을 받지 않게 바뀌었을 수 있다 — 옵션 없이 한 번 더, 되면 10분 동안은 옵션 없이
+        text, msg = _biz_run(exe, prompt, BIZ_TOOLS_OFF)
+        if text:
+            _biz['think'] = time.time()
     if not text:
-        msg = next((json.dumps(e.get('error') or e.get('part'), ensure_ascii=False) for e in ev if e.get('type') == 'error'), '')
-        msg = msg or (r.stderr.decode('utf-8', 'replace') or '응답 없음')[-200:]
         if '로그인' in msg or 'login' in msg.lower() or 'auth' in msg.lower():
             _biz.update(t=0, v=None)
             msg += ' → 터미널에서 bizcoder login'
@@ -370,7 +376,7 @@ def call(system, user, max_tokens=2500, fast=False, json_mode=False):
     t0 = time.time()
     p, pcfg = getattr(_prov, 'name', ''), getattr(_prov, 'cfg', None) or {}
     if p == 'bizcoder':
-        return _call_bizcoder(system, user, pcfg.get('model')), int((time.time() - t0) * 1000)
+        return _call_bizcoder(system, user), int((time.time() - t0) * 1000)
     if p == 'ollama':
         return _call_ollama(system, user, pcfg, json_mode), int((time.time() - t0) * 1000)
     model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
@@ -426,7 +432,7 @@ def _try(ctx, fn_llm, fn_rule):
             out, ms = fn_llm(mk.mask if mk else (lambda x: x))
             if mk:
                 out = mk.unmask(out)
-            model = pcfg.get('model') or (CFG['bizcoder_model'] if prov == 'bizcoder' else CFG['llm_model'])
+            model = BIZ_MODEL if prov == 'bizcoder' else pcfg.get('model') or CFG['llm_model']
             return out, {'mode': 'llm', 'model': model, 'label': ctx.get('label') or display(),
                          'ms': ms, 'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
         except Exception as e:
@@ -644,3 +650,28 @@ def extract(docs, ctx=None):
             out.setdefault(k, [])
         return out, ms
     return _try(ctx, llm, rule)
+
+
+if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 옵션이 거부되면 옵션 없이 다시 부르고, 그 뒤 10분은 옵션 없이 부른다
+    seen, reject = [], True
+    bizcoder_path = lambda: 'bizcoder'      # noqa: E731
+
+    def _biz_run(exe, prompt, conf):        # noqa: F811
+        seen.append('provider' in conf)
+        return ('', '옵션 거부') if reject and 'provider' in conf else ('답', '')
+    CFG['bizcoder_reasoning'] = 'default'
+    assert _biz_conf() == BIZ_TOOLS_OFF                                            # default = 옵션 없음(모델 기본)
+    CFG['bizcoder_reasoning'] = 'off'
+    assert _biz_conf() == {'tools': {'*': False}, 'provider': {'bizrouter': {'models': {'deepseek/deepseek-v4-flash-0731': {'options': {'reasoning': {'effort': 'none'}}}}}}}
+    assert _call_bizcoder('s', 'u') == '답' and seen == [True, False]              # 거부 → 옵션 없이 다시
+    assert _call_bizcoder('s', 'u') == '답' and seen == [True, False, False]       # 그 뒤 10분은 옵션 없이 한 번에
+    _biz['think'], reject = 0, False
+    assert _call_bizcoder('s', 'u') == '답' and seen[-1] is True             # 평소: 옵션을 주고 한 번에
+    reject = True
+    _biz_run = lambda exe, prompt, conf: ('', '로그인이 필요해요')                  # noqa: E731
+    try:
+        _call_bizcoder('s', 'u')
+        raise AssertionError('오류가 나야 한다')
+    except RuntimeError as e:
+        assert 'bizcoder login' in str(e)
+    print('llm selftest OK')

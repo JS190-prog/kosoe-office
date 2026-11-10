@@ -304,10 +304,7 @@ async function pickLLM() {
     ${d.options.map(o => `<button class="llm-op ${o.id === d.choice ? 'on' : ''}" onclick="setLLM('${o.id}')" ${o.ready || o.id === d.choice || o.id === 'ollama' ? '' : 'disabled'}>
       <span class="grow"><b>${esc(o.label)}</b><br><span class="small muted">${esc(o.desc)}</span></span>
       <span class="chip ${o.ready ? 'ok' : 'o'}">${o.id === d.choice ? '사용 중' : o.ready ? '고르기' : o.id === 'ollama' ? '설정 확인' : '연결 안 됨'}</span></button>`).join('')}
-    <details class="llm-set" ${ol.ready ? '' : 'open'}><summary>⚙ 설정 — BizCoder 모델 · Ollama 서버</summary>
-      <label><span>BizCoder 모델 <span class="muted">(회사 정책이 허용한 모델)</span></span>
-        <select class="in" id="bz-model" ${d.bizcoder_models.length ? '' : 'disabled'}>${(d.bizcoder_models.length ? d.bizcoder_models : [c.bizcoder.model]).map(m =>
-          `<option ${m === c.bizcoder.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
+    <details class="llm-set" ${ol.ready ? '' : 'open'}><summary>⚙ Ollama 설정 — 서버 주소 · API 키 · 모델</summary>
       <label><span>Ollama 서버 주소 <span class="muted">(사내 Ollama · ollama.com API — 예: https://llm.사내.kr, 로컬은 http://localhost:11434)</span></span>
         <input class="in" id="ol-url" value="${esc(c.ollama.url)}"></label>
       <label><span>API 키 <span class="muted">(인증이 걸린 서버만 — 로컬 Ollama는 비워 둠)</span></span>
@@ -334,8 +331,7 @@ async function olLoad(quiet) {      // 입력한 서버의 모델을 고르기 �
     st.textContent = `연결됨 · 글쓰기 모델 ${loc.length}개${cl.length ? ` · 클라우드 ${cl.length}개` : ''}`;
   } catch (e) { st.textContent = '⚠ ' + e.message; if (!quiet) toast(e.message, true); }
 }
-const llmForm = () => ({bizcoder: $('#bz-model').disabled ? {} : {model: $('#bz-model').value},
-  ollama: {url: $('#ol-url').value.trim(), model: $('#ol-model').value, key: $('#ol-key').value.trim(), key_clear: !!$('#ol-key-clear')?.checked}});
+const llmForm = () => ({ollama: {url: $('#ol-url').value.trim(), model: $('#ol-model').value, key: $('#ol-key').value.trim(), key_clear: !!$('#ol-key-clear')?.checked}});
 async function saveLLM() {
   await busy('사내 LLM 설정을 저장하는 중…', () => api('/api/ai/settings', {body: llmForm()}));
   toast('사내 LLM 설정을 저장했습니다'); await refreshMe(); pickLLM();
