@@ -24,7 +24,7 @@ fs.mkdirSync(OUT, { recursive: true });
   if (hwp) {
     await page.evaluate(async id => { await editDoc(id); LASTDOC = (await api('/api/docs/' + id)).doc; }, hwp.id);
     await page.waitForSelector('#outp'); await page.evaluate(() => renderOut()); await shot('03-workspace');
-    await page.evaluate(([id, v]) => preview(id, 'hwp', v), [hwp.id, hwp.ver]); await page.waitForSelector('.hwpv'); await shot('04-hwp');
+    await page.evaluate(([id, v]) => preview(id, 'hwp', v), [hwp.id, hwp.ver]); await page.waitForSelector('.rh-page svg, .hwpl-page', { timeout: 60000 }); await shot('04-hwp');
     await close();
   }
   if (deck) {

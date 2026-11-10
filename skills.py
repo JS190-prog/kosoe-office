@@ -15,6 +15,7 @@ import time
 
 import yaml
 
+import checks
 import corp
 from core import CFG, HOME, FMT
 from gitutil import GitError, gh, git, git_remote, have_gh, identity
@@ -162,6 +163,8 @@ def resolve(sid, skills=None):
             r['forms'][f['id']] = {**f, 'from': s['id']}
         if s.get('grade'):
             r['grade'] = s['grade']
+        if s.get('style'):                      # 문체: 아래 스킬이 위를 덮는다(양식에 적힌 style이 가장 우선)
+            r['style'] = s['style']
     r['resolution'] = {
         'corp': {cid: (lk['corp_skills'].get(cid) or {}).get('sha', '')[:7] for cid in corp_ids},
         'skills': [f"{l['id']}@{l['version']}" for l in levels],
@@ -205,6 +208,11 @@ def validate(s, skills=None):
             errs.append(f"양식 {f.get('id')}: fmt는 hwp|ppt|web")
         if not f.get('outline'):
             errs.append(f"양식 {f.get('id')}: outline(장 구성) 없음")
+        errs += [f"양식 {f.get('id')}: {e}" for e in checks.validate_style(f.get('style'))]
+    errs += checks.validate_style(s.get('style'))
+    v = s.get('verification')
+    if v is not None and not (isinstance(v, dict) and v.get('status') in ('passed', 'forced')):
+        errs.append('verification.status는 passed | forced')
     text = json.dumps({k: v for k, v in s.items() if not k.startswith('_')}, ensure_ascii=False)
     for rx, name in PII:
         if rx.search(text):
@@ -220,7 +228,19 @@ def form_rows():
         rows.append({'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'use': f.get('use', '보고'), 'scope': 'corp',
                      'outline': f['outline'], 'desc': f.get('desc', ''), 'preset': f.get('preset', ''), 'grade': f.get('grade', 'i'),
                      'dept': '', 'team': '', 'owner': '전사', 'ver': '-', 'path': 'registry/corp.forms.yaml', 'tag': '',
-                     'fields': [], 'rules': f.get('rules', ''), 'fixed': [], 'skill': {'id': '', 'corp': [f['corp']] if f.get('corp') else []}})
+                     'fields': [], 'rules': f.get('rules', ''), 'fixed': [], 'skill': {'id': '', 'corp': f.get('corp', '')}})
+    # 서식 채우기형 한글 스킬(목적별: 계약서·공문 등) — 잠금 파일에 kind: hwp-fill 로 올라온 스킬의 form.yaml이 곧 전사 양식 카드
+    for cid, c in corp.fill_skills():
+        try:
+            f = corp.form_of(cid)
+        except Exception as e:
+            print(f'[skills] 서식 채우기 스킬 {cid}의 form.yaml을 읽지 못함: {str(e)[:160]}')
+            continue
+        rows.append({'id': f.get('id') or cid, 'name': f.get('name') or cid, 'fmt': 'hwp', 'use': f.get('use', '계약'), 'scope': 'corp',
+                     'outline': [s.get('heading', '') for s in f.get('sections') or []], 'desc': f.get('purpose', ''), 'preset': '',
+                     'grade': f.get('grade', 'i'), 'dept': '', 'team': '', 'owner': f.get('owner', '전사'), 'ver': '-',
+                     'path': 'registry/corp.lock.yaml', 'tag': '', 'fields': [], 'rules': '', 'fixed': [],
+                     'skill': {'id': '', 'corp': cid, 'fill': f, 'style': {'ending': 'any', 'date': 'any', 'max_len': 0}}})
     skills = all_skills()
     for sid, s in skills.items():
         r = resolve(sid, skills)
@@ -236,7 +256,8 @@ def form_rows():
                          'ver': s.get('version', ''), 'path': s['_path'], 'tag': (tags_of(sid) or [''])[0],
                          'fields': [], 'rules': '\n'.join(r['rules']), 'fixed': fixed,
                          'skill': {'id': sid, 'name': s.get('name'), 'version': s.get('version'), 'chain': [l['id'] for l in r['levels']],
-                                   'corp': r['corp_ids'], 'checks': r['checks'], 'glossary': r['glossary']}})
+                                   'corp': r['corp_ids'], 'checks': r['checks'], 'glossary': r['glossary'],
+                                   'style': f.get('style') or r.get('style'), 'verification': s.get('verification')}})
     return rows
 
 

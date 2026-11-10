@@ -3,12 +3,14 @@
 실행: python app.py  →  http://localhost:8810
 """
 import json
+import mimetypes
 import os
 import re
 import secrets
 import unicodedata
 from shutil import which as shutil_which
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -23,6 +25,7 @@ import core
 import corp
 import engines
 import extract
+import fillform
 import llm
 import skills
 from core import CFG, DATA, FMT, GRADE, ROLE, db, now, row, rows
@@ -37,6 +40,7 @@ def log(who, what):
 
 
 app = Flask(__name__, static_folder=None)
+mimetypes.add_type('application/wasm', '.wasm')      # rhwp(WASM) 스트리밍 초기화에 필요
 _sk = os.path.join(DATA, 'secret.key')
 if not os.path.exists(_sk):
     open(_sk, 'w').write(secrets.token_hex(32))
@@ -93,61 +97,49 @@ def J(s, d=None):
         return d
 
 
-# 폐쇄망에서 쓰는 사내 LLM — 화면(🤖 표시)에서 고르면 사용자마다 policy 표의 closed_llm:<사용자 id> 에 남고, 없으면 .env 의 KOSOE_CLOSED_LLM.
-# Ollama 설정(서버 주소·API 키·모델)도 사용자마다 llm_cfg:<사용자 id> 에, 없으면 .env 기본값. BizCoder 는 모델 고정(llm.BIZ_MODEL)이라 설정이 없다
-CLOSED = ('bizcoder', 'ollama', 'same', 'rule')
-
-
-def _mine(key):
-    u = g.get('u')          # 로그인 없이 부르는 /api/health 에서는 .env 기본값
-    r = u and row(g.con, 'select v from policy where k=?', f"{key}:{u['id']}")
-    return r['v'] if r else None
-
-
-def closed_choice():
-    v = _mine('closed_llm') or CFG['closed_llm']
-    return v if v in CLOSED else 'same'
-
-
-def llm_cfg():
-    s = J(_mine('llm_cfg'), {})
-    return {'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], 'key': CFG['ollama_key'], **s.get('ollama', {})}}
-
-
-def public_cfg(cfg):
-    """화면으로 보내는 설정 — API 키는 빼고 있는지 · 끝 4자리만."""
-    o = dict(cfg['ollama'])
-    k = o.pop('key', '') or ''
-    return {**cfg, 'ollama': {**o, 'has_key': bool(k), 'key_hint': ('…' + k[-4:]) if len(k) >= 8 else ('설정됨' if k else '')}}
-
-
-def closed_label(c, cfg):
-    return {'bizcoder': 'BizCoder · ' + llm.BIZ_LABEL, 'ollama': 'Ollama · ' + (cfg['ollama']['model'] or '모델 미설정'),
-            'same': 'Claude 구독 CLI (시연)', 'rule': '규칙 기반 (AI 없음)'}[c]
-
-
 def ai_ctx(fast=False):
-    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 고른 사내 LLM(BizCoder · Ollama · 시연용 구독 CLI · 규칙)."""
+    """망 구분에 따른 AI 사용 방식. 인터넷망 = 고른 AI + 마스킹, 폐쇄망 = 사내 LLM(BizCoder · Ollama) 또는 사내 모델 자리(시연: 구독 CLI · 외부 API · 규칙)."""
+    pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
     if g.net == 'internet':
-        pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
         return {'use_llm': True, 'label': f"{llm.display()} (인터넷망 · 마스킹)", 'mk': llm.Masker(pol), 'fast': fast}
-    c, cfg = closed_choice(), llm_cfg()
-    if c == 'rule':
+    if CFG['closed_llm'] == 'rule':
         return {'use_llm': False}
-    if c in ('bizcoder', 'ollama'):
-        return {'use_llm': True, 'label': '사내 LLM · ' + closed_label(c, cfg), 'mk': None, 'fast': fast, 'provider': c, 'cfg': cfg.get(c)}
+    if llm.external():
+        # 시연: 사내에 올릴 모델을 외부 API로 대신 부른다 → 요청이 밖으로 나가므로 망 모드와 관계없이 가린다
+        return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ' · 마스킹)', 'mk': llm.Masker(pol), 'fast': fast}
+    if llm.internal():
+        return {'use_llm': True, 'label': '사내 LLM · ' + llm.display(), 'mk': None, 'fast': fast}
     return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
 
 
 def ai_state():
-    c, cfg = closed_choice(), llm_cfg()
-    st = llm.bizcoder_status() if c == 'bizcoder' else llm.ollama_status(cfg['ollama']) if c == 'ollama' else {}
-    closed = {'closed': c, 'closed_label': closed_label(c, cfg), 'closed_ready': st.get('ready', True), 'closed_detail': st.get('detail', '')}
-    if CFG['llm_kind'] == 'claude_cli':
-        st = llm.cli_status()
-        return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'detail': st['detail'], **closed}
-    return {'connected': llm.available(), 'model': llm.display(), 'kind': CFG['llm_kind'],
-            'detail': '' if llm.available() else 'KOSOE_LLM_API_KEY 없음', **closed}
+    st = llm.state()
+    cur = next((p for p in st['providers'] if p['kind'] == st['kind']), {})
+    return {'connected': st['connected'], 'model': st['display'], 'kind': st['kind'], 'closed': CFG['closed_llm'],
+            'detail': cur.get('detail', ''), 'external': llm.external(), 'internal': llm.internal()}
+
+
+def load_ai_choice():
+    """이 PC에서 마지막으로 고른 AI 제공자와 Ollama 설정을 되살린다(없으면 .env의 KOSOE_AI · KOSOE_OLLAMA_*)."""
+    con = db()
+    r = row(con, "select v from policy where k='ai'")
+    o = row(con, "select v from policy where k='ai_ollama'")
+    con.close()
+    llm.OLLAMA.update({k: v for k, v in (J(o['v'], {}) if o else {}).items() if k in llm.OLLAMA})
+    c = J(r['v'], {}) if r else {}
+    models = dict(c.get('models') or {})
+    if c.get('or_model'):                       # 이전 저장 형식
+        models.setdefault('openrouter', c['or_model'])
+    keep = llm.provider()
+    for k, m in models.items():                 # 외부 API별로 고른 모델(목록에서 빠졌으면 건너뜀)
+        try:
+            llm.set_provider(k, m)
+        except Exception:
+            pass
+    try:
+        llm.set_provider(c.get('kind') or keep)
+    except Exception:
+        llm.set_provider(keep)
 
 
 def people_of(u):
@@ -190,7 +182,7 @@ def tpl_view(t, u):
         up = list(reversed((info.get('chain') or [])[:-1])) + ['전사']
         o['skill'] = f"{info['id']}@{info.get('version', '')} ← " + ' ← '.join(up)
     else:
-        e = engines.engine_of(t['fmt'], t['preset'] or '')
+        e = engines.fill_engine(info['corp']) if info.get('fill') else engines.engine_of(t['fmt'], t['preset'] or '')
         o['skill'] = f"전사 {e['name']}@{e['sha']}"
     o['usable'] = core.can_use_template(t, u, g.net)
     o['blocked'] = '대외비 양식은 인터넷망에서 쓸 수 없습니다' if g.net == 'internet' and t['grade'] == 'c' else ''
@@ -202,7 +194,7 @@ SAMPLE_EXT = ('.webp', '.png', '.jpg', '.jpeg', '.svg')
 
 def _sample_dir(t):
     """양식 카드의 샘플 그림 폴더(스킬 저장소): 전사 양식 = registry/samples/<id>/, 스킬 양식 = 그 스킬 폴더의 samples/<양식 id>/."""
-    if t['path'] == 'registry/corp.forms.yaml':
+    if t['path'].startswith('registry/'):      # corp.forms.yaml 의 전사 양식 · corp.lock.yaml 의 서식 채우기형 전사 스킬
         return os.path.join(skills.REPO, 'registry', 'samples', t['id'])
     return os.path.join(skills.REPO, *t['path'].split('/'), 'samples', t['id'].split(':', 1)[-1])
 
@@ -215,7 +207,7 @@ def samples_of(t, corp):
     """카드를 누르면 보일 샘플: 자기 샘플 → 같은 형식·서식(preset)의 전사 샘플 → 같은 형식의 다른 전사 샘플.
     돌려주는 값 {'src': 그림을 가진 양식 id, 'from': 빌려 온 전사 양식 이름(자기 것이면 ''), 'files': [...]}"""
     fs = _sample_files(_sample_dir(t))
-    if fs:
+    if fs or (J(t['skill'], {}) or {}).get('fill'):      # 서식 채우기형은 모양이 정해져 있어 다른 양식의 샘플을 빌리지 않는다
         return {'src': t['id'], 'from': '', 'files': fs}
     for c in sorted((c for c in corp if c['fmt'] == t['fmt'] and c['id'] != t['id']), key=lambda c: c['preset'] != t['preset']):
         fs = _sample_files(_sample_dir(c))
@@ -239,7 +231,8 @@ def template_for_render(t):
     """엔진에 넘길 양식 정보 + 해석된 스킬 사슬."""
     info = J(t['skill'], {}) or {}
     chain = info.get('chain') or []
-    return {**t, 'chain_names': [f'전사 {c}' for c in (info.get('corp') or [])[:1]] + chain[-2:]}
+    corp_ids = info.get('corp') or []
+    return {**t, 'chain_names': [f'전사 {c}' for c in ([corp_ids] if isinstance(corp_ids, str) else corp_ids)[:1]] + chain[-2:]}
 
 
 def doc_view(d, u, full=False):
@@ -370,35 +363,6 @@ def me():
               repo={'mode': skills.STATE['mode'], 'url': skills.STATE['url'], 'head': skills.STATE['head'][:7], 'error': skills.STATE['error']})
 
 
-@app.get('/api/ai/closed')
-@login_required
-def closed_llm_get():
-    """사내 LLM 고르기 화면: 선택지 · 지금 쓸 수 있는지 · 내 Ollama 설정."""
-    cfg = llm_cfg()
-    biz, ol = llm.bizcoder_status(force=True), llm.ollama_status(cfg['ollama'], force=True)
-    return ok(choice=closed_choice(), cfg=public_cfg(cfg), options=[
-        {'id': 'bizcoder', 'label': closed_label('bizcoder', cfg), 'ready': biz['ready'],
-         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {llm.BIZ_MODEL} · {biz['detail']}"},
-        {'id': 'ollama', 'label': closed_label('ollama', cfg), 'ready': ol['ready'], 'desc': f"사내 Ollama 서버 {cfg['ollama']['url']} · {ol['detail']}"},
-        {'id': 'same', 'label': closed_label('same', cfg), 'ready': llm.available(), 'desc': f"{llm.display()} — 사내 LLM 자리를 대신하는 시연용"},
-        {'id': 'rule', 'label': closed_label('rule', cfg), 'ready': True, 'desc': 'AI 없이 규칙 기반 보조로만 초안을 만듭니다'}])
-
-
-@app.post('/api/ai/closed')
-@login_required
-def closed_llm_set():
-    v = (request.json or {}).get('choice')
-    if v not in CLOSED:
-        return err('알 수 없는 선택입니다')
-    cfg = llm_cfg()
-    st = llm.bizcoder_status(force=True) if v == 'bizcoder' else llm.ollama_status(cfg['ollama'], force=True) if v == 'ollama' else {'ready': True}
-    if not st['ready']:
-        return err(f"{closed_label(v, cfg)}를 쓸 수 없습니다: {st['detail']}")
-    g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('closed_llm:' + g.u['id'], v))
-    log(g.u['name'], f'사내 LLM 선택 → {closed_label(v, cfg)}')
-    return ok(ai=ai_state())
-
-
 def _http_url(v):
     p = urllib.parse.urlparse(str(v or '').strip())
     return p.geturl().rstrip('/') if p.scheme in ('http', 'https') and p.netloc else ''
@@ -408,42 +372,41 @@ def _host(url):
     return urllib.parse.urlparse(url or '').netloc.lower()
 
 
-@app.post('/api/ai/settings')
+@app.post('/api/ai/ollama')
 @login_required
-def llm_settings():
-    """내 사내 LLM 설정 저장: Ollama 서버 주소·API 키·모델(BizCoder 는 모델 고정이라 설정이 없다).
-    서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게(고를 때 연결을 확인한다).
+def ollama_set():
+    """Ollama 설정 저장(이 PC 설정): 서버 주소 · API 키 · 모델. 서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게.
     API 키: 비워 두면 저장된 키 유지, key_clear 면 지움. 서버(호스트)가 바뀌면 새 키를 넣지 않는 한 예전 키를 지운다 — 다른 서버로 키가 가지 않게."""
-    b, cfg = request.json or {}, llm_cfg()
-    o, ol = b.get('ollama') or {}, cfg['ollama']
-    if 'url' in o:
-        url = _http_url(o['url'])
+    b, ol = request.json or {}, dict(llm.OLLAMA)
+    if 'url' in b:
+        url = _http_url(b['url'])
         if not url:
             return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다 (예: https://llm.사내.kr 또는 http://10.10.1.20:11434)')
         if _host(url) != _host(ol['url']):
             ol['key'] = ''
         ol['url'] = url
-    if 'model' in o:
-        ol['model'] = str(o['model'] or '').strip()[:200]
-    if o.get('key_clear'):
+    if 'model' in b:
+        ol['model'] = str(b['model'] or '').strip()[:200]
+    if b.get('key_clear'):
         ol['key'] = ''
-    if str(o.get('key') or '').strip():
-        ol['key'] = str(o['key']).strip()[:500]
-    g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('llm_cfg:' + g.u['id'], json.dumps(cfg, ensure_ascii=False)))
-    log(g.u['name'], f"사내 LLM 설정 — Ollama {ol['url']} {ol['model']} · API 키 {'있음' if ol['key'] else '없음'}")
-    return ok(cfg=public_cfg(cfg), ai=ai_state())
+    if str(b.get('key') or '').strip():
+        ol['key'] = str(b['key']).strip()[:500]
+    llm.OLLAMA.update(ol)
+    g.con.execute("insert into policy(k,v) values('ai_ollama',?) on conflict(k) do update set v=excluded.v", (json.dumps(ol, ensure_ascii=False),))
+    log(g.u['name'], f"Ollama 설정 — {ol['url']} {ol['model']} · API 키 {'있음' if ol['key'] else '없음'}")
+    return ok(ai=llm.state(probe=True))
 
 
 @app.post('/api/ai/ollama/models')
 @login_required
 def ollama_models():
-    """설정 화면의 [모델 불러오기]: 입력한 Ollama 서버(+API 키)의 글쓰기용 모델 목록.
+    """AI 선택 창의 [모델 불러오기]: 입력한 Ollama 서버(+API 키)의 글쓰기용 모델 목록.
     키 칸이 비었으면 같은 서버일 때만 저장된 키를 쓴다. (키가 주소창·로그에 남지 않게 POST)"""
     b = request.json or {}
     url = _http_url(b.get('url'))
     if not url:
         return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다')
-    saved = llm_cfg()['ollama']
+    saved = llm.OLLAMA
     key = str(b.get('key') or '').strip() or (saved['key'] if _host(url) == _host(saved['url']) and not b.get('key_clear') else '')
     try:
         return ok(models=llm.ollama_models({'url': url, 'key': key}))
@@ -462,10 +425,40 @@ def set_net():
     return ok()
 
 
+@app.get('/api/ai')
+@login_required
+def ai_get():
+    return ok(ai=llm.state(probe=True), usage=llm.usage(), closed=CFG['closed_llm'])
+
+
+@app.post('/api/ai')
+@login_required
+def ai_set():
+    """AI 제공자 바꾸기(이 PC 설정). 예: Claude Code CLI ↔ NVIDIA API · OpenRouter(DeepSeek) ↔ 사내 LLM(BizCoder · Ollama)."""
+    b = request.json or {}
+    try:
+        st = llm.set_provider(b.get('kind'), b.get('model') or b.get('or_model') or '')
+    except ValueError as e:
+        return err(str(e))
+    g.con.execute("insert into policy(k,v) values('ai',?) on conflict(k) do update set v=excluded.v",
+                  (json.dumps({'kind': st['kind'], 'models': llm.chosen_models()}, ensure_ascii=False),))
+    log(g.u['name'], f"AI 전환 → {st['display']}" + ('' if st['connected'] else ' (연결 안 됨 — 규칙 기반으로 동작)'))
+    return ok(ai=st)
+
+
+@app.post('/api/ai/ping')
+@login_required
+def ai_ping():
+    p = llm.ping()
+    if p.get('ok'):
+        log(g.u['name'], f"AI 연결 시험 — {p['model']} {p['ms']}ms")
+    return ok(ping=p, usage=llm.usage())
+
+
 @app.get('/api/health')
 def health():
     p = llm.ping() if request.args.get('ping') else {'ok': llm.available(), 'error': ai_state()['detail']}
-    return ok(ai=p, hwp=engines.hwp_ready(), repo=skills.STATE, model=llm.display(), kind=CFG['llm_kind'], corp=corp.status())
+    return ok(ai=p, hwp=engines.hwp_ready(), repo=skills.STATE, model=llm.display(), kind=llm.provider(), corp=corp.status())
 
 
 # ───────────── 양식 ─────────────
@@ -532,7 +525,17 @@ def _uploads(ids):
 def compose_view(c):
     return {'id': c['id'], 'template_id': c['template_id'], 'fmt': c['fmt'], 'grade': c['grade'], 'title': c['title'],
             'blueprint': J(c['blueprint'], {}), 'chat': J(c['chat'], []), 'files': J(c['files'], []), 'doc_id': c['doc_id'],
-            'llm': J(c['llm'], {})}
+            'llm': J(c['llm'], {}), 'fill': _fill_of(c['template_id'])}
+
+
+def _fill_of(template_id):
+    """서식 채우기형 양식이면 화면에 보일 요약(스킬 id · 형식 제한), 아니면 None."""
+    t = row(g.con, 'select skill from templates where id=?', template_id)
+    info = (J(t['skill'], {}) or {}) if t else {}
+    if not info.get('fill'):
+        return None
+    e = engines.fill_engine(info['corp'])
+    return {'corp': info['corp'], 'sha': e['sha'], 'name': info['fill'].get('name', ''), 'fmts': ['hwp']}
 
 
 def _tpl_for_llm(t):
@@ -548,7 +551,16 @@ def _tpl_for_llm(t):
     req = (info.get('checks') or {}).get('required') or []
     if req:
         rules.append('반드시 넣을 문구(글자 그대로): ' + ' / '.join(req))
-    return {**t, 'rules': '\n'.join(r for r in rules if r)}
+    return {**t, 'rules': '\n'.join(r for r in rules if r), 'style': info.get('style'), 'fill': info.get('fill')}
+
+
+def _style_of(t):
+    """양식(템플릿 행)의 문체와 고정 문구 글 — 검수·자동 수정에 넘긴다. 스킬에 문체가 없으면 None(코스콤 보고 문법)."""
+    if not t:
+        return None, []
+    info = J(t['skill'], {}) or {}
+    # 글자 그대로 넣어야 하는 글(고정 문구 · 상위 스킬의 필수 문구)은 문체 검사에서 뺀다
+    return info.get('style'), [f.get('text', '') for f in J(t['fixed'], [])] + ((info.get('checks') or {}).get('required') or [])
 
 
 @app.post('/api/compose')
@@ -606,7 +618,13 @@ def compose_chat(cid):
     if not msg:
         return err('내용을 입력해 주세요')
     files = _uploads(b.get('upload_ids'))
-    out, meta = llm.edit(J(c['blueprint']), msg, files, ai_ctx())
+    t = row(g.con, 'select * from templates where id=?', c['template_id'])
+    fill = (J(t['skill'], {}) or {}).get('fill') if t else None
+    out, meta = llm.edit(J(c['blueprint']), msg, files, ai_ctx(), _style_of(t)[0],
+                         '이 문서는 모양이 정해진 서식의 칸을 채우는 문서다. 장 제목 · 항목의 label · 표의 열 이름과 순서는 바꾸지 않는다. '
+                         '값(text, 표의 칸)만 지시대로 바꾼다. 요청·자료에 없는 값은 지어내지 않는다.' if fill else '')
+    if fill:                                    # 칸 이름·표 열이 서식과 같게 되돌린다(값만 유지)
+        out['blueprint'] = fillform.normalize(out['blueprint'], fill)
     chat = J(c['chat'], [])
     chat += [{'who': 'me', 'text': msg, 't': now(), 'files': [f['name'] for f in files]}, {'who': 'ai', 'text': out['reply'], 't': now(), 'meta': meta}]
     bp = out['blueprint']
@@ -623,6 +641,10 @@ def compose_put(cid):
     c = _my_compose(cid)
     b = request.json or {}
     bp = llm._clean_bp(b.get('blueprint') or J(c['blueprint']), [])
+    t = row(g.con, 'select skill from templates where id=?', c['template_id'])
+    fill = (J(t['skill'], {}) or {}).get('fill') if t else None
+    if fill:
+        bp = fillform.normalize(bp, fill)
     g.con.execute('update compose set blueprint=?, title=?, fmt=?, grade=? where id=?',
                   (json.dumps(bp, ensure_ascii=False), bp['title'], b.get('fmt') or c['fmt'], b.get('grade') or c['grade'], cid))
     return ok(compose=compose_view(row(g.con, 'select * from compose where id=?', cid)))
@@ -642,12 +664,14 @@ def _file_text(path, fmt):
 def _render(doc_id, ver, fmt, bp, t, u, meta, source=''):
     tr = template_for_render(t)
     path, warns, ms, engine = engines.make(fmt, bp, tr, people_of(u), doc_id, ver)
-    cks = engines.check(bp, warns)
+    cks = engines.check(bp, warns, *_style_of(t))
     if fmt != 'hwp':
         cks = [c for c in cks if c['id'] != 'render']
     info = J(t['skill'], {}) or {}
     if info.get('id'):
         cks += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
+    if info.get('fill'):                        # 서식 채우기형: 필수 칸 · 칸 형식 · 표
+        cks = [c for c in cks if c['id'] not in ('empty', 'todo')] + fillform.check(bp, info['fill'])
     if source and source.strip():
         cc = checks.crosscheck(source, [{'name': FMT[fmt], 'text': _file_text(path, fmt)}])
         bad = [i for i in cc['items'] if i['kind'] in ('mismatch', 'unknown')]
@@ -675,6 +699,8 @@ def compose_generate(cid):
         return err('양식이 저장소에서 사라졌습니다. 양식을 다시 골라 주세요.', 404)
     bp = J(c['blueprint'])
     meta = J(c['llm'], {})
+    if (J(t['skill'], {}) or {}).get('fill'):       # 서식 채우기형(계약서 등)은 그 서식의 한글 파일만 만든다
+        fmts = ['hwp']
     if c['doc_id']:
         d = row(g.con, 'select * from docs where id=?', c['doc_id'])
         ver = d['ver'] + 1
@@ -770,7 +796,9 @@ def doc_fix(did):
     sync_forms()
     t = row(g.con, 'select * from templates where id=?', d['template_id'])
     last = row(g.con, "select warns from doc_files where doc_id=? and ver=? and fmt='hwp'", did, d['ver'])
-    bp, meta = engines.autofix(J(d['blueprint']), lambda xs: llm.shorten(xs, ai_ctx(fast=True)), J(last['warns'], []) if last else [])
+    style, fixed_texts = _style_of(t)
+    bp, meta = engines.autofix(J(d['blueprint']), lambda xs: llm.shorten(xs, ai_ctx(fast=True), style), J(last['warns'], []) if last else [],
+                               style, fixed_texts)
     info = J(t['skill'], {}) if t else {}
     if info and info.get('id'):
         bp = checks.fix_skill(bp, {**info, 'fixed': J(t['fixed'], [])})
@@ -818,8 +846,15 @@ def doc_file(did):
     ext = os.path.splitext(f['path'])[1]
     if not inline:
         log(g.u['name'], f"다운로드 — {d['title']} v{ver}{ext}")
-    safe = re.sub(r'[\\/:*?"<>|]', '_', d['title'])
-    return send_file(f['path'], as_attachment=not inline, download_name=f'{safe}_v{ver}{ext}')
+    return send_file(f['path'], as_attachment=not inline, download_name=f"{_file_stem(d['title'])}_v{ver}{ext}")
+
+
+def _file_stem(title):
+    """문서 제목 → 받기 파일 이름. 줄바꿈·제어문자가 있으면 HTTP 헤더에 못 넣어 500이 나므로 첫 줄만, 파일 이름에 못 쓰는 글자는 바꾼다."""
+    first = next((l.strip() for l in re.split(r'[\r\n]+', str(title or '')) if l.strip()), '')
+    s = re.sub(r'[\x00-\x1f\x7f]', ' ', first)
+    s = re.sub(r'[\\/:*?"<>|]', '_', s)
+    return re.sub(r'\s+', ' ', s).strip(' .')[:80] or '문서'
 
 
 @app.get('/api/docs/<did>/shot/<int:ver>/<name>')
@@ -839,6 +874,44 @@ def doc_text(did):
         return err('한글 파일이 없습니다', 404)
     pua = re.compile('[-]')
     return ok(lines=[pua.sub('■', l) for l in engines.hwp_text(f['path'])])
+
+
+@app.get('/api/docs/<did>/report')
+@login_required
+def doc_report(did):
+    """한글 '모양 미리보기'용: 렌더러에 넘긴 보고서 구조(제목·결재란·장·항목·표). 그 버전의 것이 없으면 현재 설계도로 다시 만든다."""
+    d = _doc(did)
+    ver = int(request.args.get('ver') or d['ver'])
+    p = os.path.join(engines.job_dir(did, ver), 'report.json')
+    if os.path.exists(p):
+        return ok(report=json.load(open(p, encoding='utf-8')), exact=True)
+    t = row(g.con, 'select * from templates where id=?', d['template_id']) or {}
+    rep = engines.to_report(J(d['blueprint'], {'title': d['title'], 'sections': []}), t, people_of(core.get_user(g.con, d['owner'])))
+    return ok(report=rep, exact=ver == d['ver'])
+
+
+@app.post('/api/docs/<did>/launch')
+@login_required
+def doc_launch(did):
+    """결과 파일을 이 PC에 연결된 프로그램으로 연다(.hwp → 한컴 뷰어·한글, .pptx → PowerPoint·Keynote). 앱은 내 PC에서만 돈다."""
+    d = _doc(did)
+    b = request.json or {}
+    ver = int(b.get('ver') or d['ver'])
+    fmt = b.get('fmt') or d['fmt']
+    f = row(g.con, 'select * from doc_files where doc_id=? and ver=? and fmt=? order by created desc', did, ver, fmt)
+    if not f or not os.path.exists(f['path']):
+        return err('파일이 없습니다(사내 보호 도구가 이름을 바꿨을 수 있습니다). 「받기」로 내려받아 열어 주세요.', 404)
+    try:
+        if os.name == 'nt':
+            os.startfile(f['path'])                      # noqa: S606 — 앱이 만든 파일만, 로컬에서만
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', f['path']])
+        else:
+            subprocess.Popen(['xdg-open', f['path']])
+    except Exception as e:
+        return err(f'열 수 있는 프로그램을 찾지 못했습니다: {str(e)[:120]} — 「받기」로 내려받아 열어 주세요.', 500)
+    log(g.u['name'], f"프로그램으로 열기 — {d['title']} v{ver} ({FMT[fmt]})")
+    return ok()
 
 
 # ───────────── 검수만 하기 (사람이 쓴 문서 · 원본값 대조 · 재검사) ─────────────
@@ -873,7 +946,7 @@ def inspect():
         if tg['text'] is None:
             continue
         bp = {'title': '', 'sections': [{'heading': '', 'items': [{'label': '', 'text': l.strip()} for l in tg['text'].splitlines() if l.strip()], 'table': None}]}
-        r = [c for c in engines.check(bp) if c['id'] in ('date', 'end')]
+        r = [c for c in engines.check(bp, (), *_style_of(t)) if c['id'] in ('date', 'end')]
         if info.get('id'):
             r += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
         rules.append({'target': tg['name'], 'checks': r})
@@ -903,8 +976,9 @@ def skill_view(sid, s, allsk, u, full=False):
     r = skills.resolve(sid, allsk)
     o = {'id': sid, 'name': s.get('name'), 'version': s.get('version'), 'scope': _scope_of(s), 'org': s.get('org', ''), 'owner': s.get('owner', ''),
          'share': s.get('share', ''), 'path': s['_path'], 'chain': r['levels'], 'corp': r['resolution']['corp'], 'tags': skills.tags_of(sid)[:8],
-         'forms': [{'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'outline': f.get('outline', [])} for f in s.get('forms') or []],
-         'errors': skills.validate(s, allsk), 'can_change': _can_change(s, u)}
+         'forms': [{'id': f['id'], 'name': f['name'], 'fmt': f['fmt'], 'outline': f.get('outline', []),
+                    'style': checks.style_label(f.get('style') or r.get('style')) if (f.get('style') or r.get('style')) else ''} for f in s.get('forms') or []],
+         'errors': skills.validate(s, allsk), 'can_change': _can_change(s, u), 'verification': s.get('verification')}
     if full:
         o.update(blocks=s.get('blocks') or [], resolved_blocks=list(r['blocks'].values()), glossary=r['glossary'], checks=r['checks'], rules=r['rules'],
                  own_rules=s.get('rules') or [], approval_line=r['approval_line'], history=skills.history(sid), files=skills.tree(sid),
@@ -957,7 +1031,9 @@ def _open_skill_request(kind, s, files, u, report=None, note=''):
                               + "\n_코쇠오피스가 만든 PR입니다. 가상 조직·가상 데이터._\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"),
                         scope_label='scope:user' if scope == 'me' else 'scope:org')
     rid = core.new_id('r')
-    hist = [{'t': now(), 'who': f"{u['name']} {u['title']}", 'act': KIND_NAME[kind] + ' 요청', 'note': note}]
+    forced = (report or {}).get('forced')
+    hist = [{'t': now(), 'who': f"{u['name']} {u['title']}", 'act': KIND_NAME[kind] + ' 요청' + (' (검증 미통과 · 강제 등록)' if forced else ''),
+             'note': (f"강제 등록 사유: {forced['reason']}" if forced else note)}]
     fmts = [f['fmt'] for f in s.get('forms') or []] or ['hwp']
     org = (s.get('org') or '').split('/')
     g.con.execute('insert into requests values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -984,6 +1060,12 @@ def _report_md(rep):
     for c in rep.get('criteria', []):
         lines.append(f"| {c['name']} | {'✅' if c['pass'] else '❌'} | {c.get('detail', '')} |")
     lines.append(f"\n스킬 사용 {rep.get('with_score', 0)}점 / 미사용 {rep.get('without_score', 0)}점")
+    st = rep.get('style') or {}
+    if st and not st.get('default'):
+        lines.append(f"\n문체 기준(대표 문서에서 잼): {st.get('label', '')} — {st.get('basis', '')}")
+    f = rep.get('forced')
+    if f:
+        lines.append(f"\n### ⚠️ 검증 미통과 강제 등록\n- 요청: {f['by']} ({f['t']})\n- 사유: {f['reason']}\n- 미통과 항목:\n" + '\n'.join(f'  - {x}' for x in f['failed']))
     return '\n'.join(lines)
 
 
@@ -1082,7 +1164,7 @@ def _highlights(docs, fixed, outline):
             s = l.strip()
             if not s:
                 continue
-            kind = 'fixed' if any(f['text'] and (f['text'] in s or s in f['text']) and len(s) > 8 for f in fixed) else \
+            kind = 'fixed' if any(f['text'] and (f['text'] in s or s in f['text'] or checks.is_fixed_item(s, [f['text']])) and len(s) > 8 for f in fixed) else \
                    'head' if any(h == s or (len(s) <= 26 and h in s) for h in outline) else \
                    'var' if checks.NUM_RX.search(s) or re.search(r'20\d\d\.\s*\d', s) else ''
             lines.append({'t': s[:160], 'k': kind})
@@ -1103,7 +1185,10 @@ def skillgen_analyze():
     for f in files:
         r = extract.read(f['path'], f['name'])
         docs.append({'name': f['name'], 'text': f['text'] or '', 'heads': r['heads'], 'kind': f['kind']})
-    out, meta = llm.extract(docs, ai_ctx())
+    # 문체는 AI가 아니라 코드가 대표 문서 글에서 잰다(종결 형태·날짜 형식·항목 길이). 보고서가 아닌 문서(계약서·공문 등)는 그 문서 기준으로 쓰고 검증한다.
+    style = checks.measure_style([d['text'] for d in docs])
+    prose = not checks.is_default_style(style)
+    out, meta = llm.extract(docs, ai_ctx(), prose)
     kinds = [d['kind'] for d in docs]
     fmt = 'ppt' if 'pptx' in kinds else 'web' if 'html' in kinds else 'hwp'
     if re.search(r'PPT|발표|제안서|덱', req_text, re.I) and 'hwp' not in kinds:
@@ -1111,9 +1196,9 @@ def skillgen_analyze():
     outline = []
     for h in out.get('outline') or []:
         h = re.sub(r'\s*\(.*?\)\s*$', '', str(h)).strip()
-        if h and len(h) <= 16 and not re.search(r'표지|목차|결재', h) and h not in outline:
+        if h and len(h) <= (28 if prose else 16) and not re.search(r'표지|목차|결재', h) and h not in outline:
             outline.append(h)
-    outline = outline[:8] or ['개요', '주요 내용', '향후 계획']
+    outline = outline[:14 if prose else 8] or ['개요', '주요 내용', '향후 계획']
     base, sim = _nearest_corp_form(outline, fmt)
     allsk = skills.all_skills()
     parent = _parent_skill(g.u, scope, allsk)
@@ -1124,11 +1209,11 @@ def skillgen_analyze():
     blocks = []
     for x in out.get('fixed') or []:
         t = re.sub(r'^\s*[ㅇ□■○●◦•·\-–※>]+\s*', '', str(x.get('text') or ''))           # 한글 단계 기호
-        t = re.sub(r'^\s*[(\[]([^)\]]{1,8})[)\]]\s*', '', t).strip()                      # (라벨)
+        t = re.sub(r'^\s*\(([^)]{1,8})\)\s*' if prose else r'^\s*[(\[]([^)\]]{1,8})[)\]]\s*', '', t).strip()   # (라벨) — 서술형 문서의 맨 앞 [칸]은 지우지 않는다
         if len(t) >= 8 and t not in [b['text'] for b in blocks]:
             h = str(x.get('heading') or '')
             blocks.append({'id': f'b{len(blocks) + 1}', 'heading': h if h in outline else next((o for o in outline if o in h or h in o), h), 'text': t})
-    blocks = blocks[:6]
+    blocks = blocks[:12 if prose else 6]
     corp_ext = {'hwp': 'corp:koscom-hwp-report', 'ppt': 'corp:koscom-doc-pack#ppt-master', 'web': 'corp:koscom-webslide'}[fmt]
     extends = ([f"skill:{parent['id']}"] if parent else []) + [corp_ext, 'corp:kosoe-illustrations']
     draft = {'id': sid, 'name': name[:40], 'scope': 'user' if scope == 'me' else 'org', 'version': '1.0.0', 'grade': 'i', 'extends': extends,
@@ -1137,6 +1222,9 @@ def skillgen_analyze():
                         'blocks': [x['id'] for x in blocks]}],
              'blocks': blocks, 'glossary': {'terms': {}, 'banned': []}, 'checks': {'required': [], 'banned': []},
              'rules': [r for r in out.get('rules') or [] if r][:6]}
+    if prose:                                   # 보고 문법과 다를 때만 스킬에 적는다(없으면 전사 보고 문법을 그대로 상속)
+        draft['forms'][0]['style'] = {k: style[k] for k in ('ending', 'date', 'max_len')}
+        draft['forms'][0]['use'] = '문서'
     if scope == 'me':
         draft['owner'] = g.u['id']
     else:
@@ -1146,6 +1234,7 @@ def skillgen_analyze():
     analysis = {'base': {'id': base['id'], 'name': base['name'], 'similarity': sim} if base else None,
                 'parent': {'id': parent['id'], 'name': parent['name'], 'version': parent['version']} if parent else None,
                 'highlights': _highlights(docs, blocks, outline), 'fields': out.get('fields') or [], 'meta': meta,
+                'style': {**style, 'label': checks.style_label(style), 'default': not prose},
                 'docs': [{'name': d['name'], 'heads': d['heads'], 'kind': d['kind']} for d in docs]}
     g.con.execute('insert into skill_jobs values(?,?,?,?,?,?,?,?,?,?,?,?)',
                   (jid, g.u['id'], req_text, scope, 'analyzed', json.dumps([f['id'] for f in files]), json.dumps(analysis, ensure_ascii=False),
@@ -1154,7 +1243,7 @@ def skillgen_analyze():
     return ok(job={'id': jid, 'draft': draft, 'analysis': analysis, 'scope': scope})
 
 
-def _bp_score(bp, form, blocks, memo, allowed=''):
+def _bp_score(bp, form, blocks, memo, allowed='', fixed=()):
     heads = [s['heading'] for s in bp['sections']]
     outline = form['outline']
     # 구성 재현: 기대 목차 순서대로 몇 개가 같은 순서로 나오는가(LCS 비율)
@@ -1165,7 +1254,7 @@ def _bp_score(bp, form, blocks, memo, allowed=''):
             dp[i + 1][j + 1] = dp[i][j] + 1 if outline[i] == heads[j] or outline[i] in heads[j] else max(dp[i][j + 1], dp[i + 1][j])
     struct = dp[m][n] / max(1, m)
     text = checks.bp_text(bp)
-    fixed_ok = all(b['text'] in text for b in blocks) if blocks else True
+    fixed_ok = all(checks.fixed_present(b['text'], text) for b in blocks) if blocks else True
     src_vals = [v for v in checks.extract_values(memo)] + checks.extract_values(allowed)   # 고정 문구(상속 포함)의 숫자는 허용
     got = checks.extract_values(text)
     lost = [v['raw'] for v in src_vals if not any(abs(x['value'] - v['value']) < 1e-9 and x['unit'] == v['unit'] for x in got)]
@@ -1175,7 +1264,7 @@ def _bp_score(bp, form, blocks, memo, allowed=''):
             return True
         return any(abs(a + c - x['value']) < 1e-9 for i, a in enumerate(same) for c in same[i + 1:])
     new = [x['raw'] for x in got if x['unit'] not in ('일', '회') and not any(abs(x['value'] - v['value']) < 1e-9 for v in src_vals) and not derived(x)]
-    gram = [c for c in engines.check(bp) if c['id'] in ('date', 'long', 'end') and not c['ok']]
+    gram = [c for c in engines.check(bp, (), form.get('style'), fixed) if c['id'] in ('date', 'long', 'end') and not c['ok']]   # 이 양식의 문체 기준
     return {'struct': round(struct, 3), 'fixed': fixed_ok, 'lost': lost[:5], 'new': new[:5], 'grammar': [c['name'] for c in gram]}
 
 
@@ -1216,10 +1305,17 @@ def skillgen_evaluate(jid):
     b = request.json or {}
     draft = b.get('draft') or J(j['skill'])
     allsk = skills.all_skills()
-    errs = skills.validate(draft, allsk)
     form = draft['forms'][0]
     blocks = [x for x in draft.get('blocks') or [] if x['id'] in (form.get('blocks') or [])] or draft.get('blocks') or []
     files = _uploads(J(j['files'], []))[:3]
+    analysis = J(j['analysis'], {})
+    if 'style' not in analysis:                 # 문체 재기 전에 분석해 둔 작업: 지금 대표 문서에서 잰다
+        st = checks.measure_style([f['text'] or '' for f in _uploads(J(j['files'], []))])
+        analysis['style'] = {**st, 'label': checks.style_label(st), 'default': checks.is_default_style(st)}
+        if not analysis['style']['default'] and not form.get('style'):
+            form['style'] = {k: st[k] for k in ('ending', 'date', 'max_len')}
+        g.con.execute('update skill_jobs set analysis=? where id=?', (json.dumps(analysis, ensure_ascii=False), jid))
+    errs = skills.validate(draft, allsk)
     # 상속 해석: 상위 스킬의 고정 문구·규칙도 함께
     parent_blocks, parent_rules = [], []
     for e in draft.get('extends') or []:
@@ -1230,7 +1326,7 @@ def skillgen_evaluate(jid):
             parent_blocks = [{'heading': x.get('heading', ''), 'text': x['text']} for x in r['blocks'].values() if x['text'] not in own]
     rules = '\n'.join((draft.get('rules') or []) + parent_rules)
     with_t = {'name': form['name'], 'desc': form.get('desc', ''), 'outline': json.dumps(form['outline'], ensure_ascii=False),
-              'fixed': json.dumps(blocks + parent_blocks, ensure_ascii=False), 'rules': rules}
+              'fixed': json.dumps(blocks + parent_blocks, ensure_ascii=False), 'rules': rules, 'style': form.get('style')}
     without_t = {'name': '일반 문서', 'desc': '', 'outline': json.dumps(['개요', '주요 내용', '향후 계획'], ensure_ascii=False), 'fixed': '[]', 'rules': ''}
     tasks = []
     ctx = ai_ctx(fast=True)
@@ -1249,8 +1345,12 @@ def skillgen_evaluate(jid):
             fw, fo = ex.submit(llm.blueprint, with_t, memo, [], ctx), ex.submit(llm.blueprint, without_t, memo, [], ctx)
             (bw, mw), (bo, mo) = fw.result(), fo.result()
         bw = checks.enforce_fixed(bw, blocks + parent_blocks)
-        allowed = chr(10).join(x['text'] for x in blocks + parent_blocks)
-        results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo, allowed), 'without': _bp_score(bo, form, blocks, memo, allowed),
+        fx = [x['text'] for x in blocks + parent_blocks] + ((draft.get('checks') or {}).get('required') or [])
+        for e in draft.get('extends') or []:      # 상위 스킬의 필수 문구도 글자 그대로 넣는 글
+            if str(e).startswith('skill:') and e.split(':', 1)[1] in allsk:
+                fx += skills.resolve(e.split(':', 1)[1], allsk)['checks']['required']
+        allowed = chr(10).join(fx)
+        results[i] = {'doc': f['name'], 'memo': memo, 'with': _bp_score(bw, form, blocks, memo, allowed, fx), 'without': _bp_score(bo, form, blocks, memo, allowed, fx),
                       'mode': mw['mode'], 'ms': max(mw['ms'], mo['ms'])}
 
     th = [threading.Thread(target=run, args=(i, f)) for i, f in enumerate(files)]
@@ -1270,18 +1370,21 @@ def skillgen_evaluate(jid):
         {'id': 'fixed', 'name': '고정 문구 글자 그대로', 'pass': bool(tasks) and all(t['with']['fixed'] for t in tasks), 'detail': f'{len(blocks)}개 블록'},
         {'id': 'numbers', 'name': '숫자·사실 보존', 'pass': bool(tasks) and all(not t['with']['lost'] and not t['with']['new'] for t in tasks),
          'detail': '; '.join(f"빠짐 {t['with']['lost']} 새 숫자 {t['with']['new']}" for t in tasks if t['with']['lost'] or t['with']['new'])},
-        {'id': 'grammar', 'name': '보고 문법(3줄·명사형·날짜)', 'pass': bool(tasks) and all(not t['with']['grammar'] for t in tasks),
+        {'id': 'grammar', 'name': '보고 문법(3줄·명사형·날짜)' if checks.is_default_style(form.get('style')) else
+            f"문체 — 대표 문서 기준({checks.style_label(form.get('style'))})", 'pass': bool(tasks) and all(not t['with']['grammar'] for t in tasks),
          'detail': '; '.join(', '.join(t['with']['grammar']) for t in tasks if t['with']['grammar'])},
         {'id': 'security', 'name': '보안(실명·연락처·계좌 없음)', 'pass': not pii, 'detail': '; '.join(pii)},
         {'id': 'compare', 'name': '효과 비교(스킬 사용 > 미사용)', 'pass': wsc > osc, 'detail': f'사용 {wsc}/{full} · 미사용 {osc}/{full}'},
         {'id': 'human', 'name': f'사람 확인(시범 작성 {need}건 👍)', 'pass': False, 'detail': '아래에서 확인', 'human': need},
     ]
     report = {'criteria': crit, 'tasks': tasks, 'with_score': wsc, 'without_score': osc, 'full': full, 'errors': errs,
-              'auto_pass': all(c['pass'] for c in crit if c['id'] != 'human') and not errs}
+              'auto_pass': all(c['pass'] for c in crit if c['id'] != 'human') and not errs, 'style': analysis.get('style'),
+              # 강제 등록: 품질 기준 미통과는 사유를 남기고 넘길 수 있지만, 스킬 파일 검사 오류와 보안(개인정보)은 넘길 수 없다
+              'can_force': not errs and not pii}
     g.con.execute("update skill_jobs set skill=?, report=?, stage='evaluated', updated=? where id=?",
                   (json.dumps(draft, ensure_ascii=False), json.dumps(report, ensure_ascii=False), now(), jid))
     log(g.u['name'], f"스킬 빌더 ④ 검증 — {draft['id']} · 사용 {wsc}/{full} vs 미사용 {osc}/{full} · 자동 기준 {'통과' if report['auto_pass'] else '미통과'}")
-    return ok(report=report, draft=draft)
+    return ok(report=report, draft=draft, analysis=analysis)
 
 
 def _skill_md(d, analysis):
@@ -1289,11 +1392,17 @@ def _skill_md(d, analysis):
     blocks = '\n'.join(f"- {b.get('heading') or '고정'}: {b['text']}" for b in d.get('blocks') or []) or '- (없음)'
     rules = '\n'.join(f'- {r}' for r in d.get('rules') or []) or '- (상위 스킬 규칙을 따른다)'
     base = (analysis or {}).get('base') or {}
+    st = (analysis or {}).get('style') or {}
+    style = (f"- 문체(대표 문서에서 잼 — 전사 보고 문법 대신 이 기준으로 쓰고 검수한다): {checks.style_label(form['style'])}"
+             + (f" · 근거: {st['basis']}" if st.get('basis') else '') + '\n') if form.get('style') else '- 문체: 전사 보고 문법(명사형 종결 · 2026. 10. 28 · 90자)을 그대로 따른다.\n'
+    v = d.get('verification') or {}
+    forced = (f"\n> ⚠️ **검증 미통과 상태로 강제 등록됨** ({v.get('date', '')}, {v.get('by', '')})\n> - 미통과: {' / '.join(v.get('failed') or [])}\n> - 사유: {v.get('reason', '')}\n"
+              if v.get('status') == 'forced' else '')
     return (f"---\nname: {d['id']}\ndescription: {d['name']} — {form['desc']}. 상위 스킬과 전사 공용 스킬을 상속하고 이 부서의 구성·고정 문구·규칙만 더한다.\n---\n\n"
             f"# {d['name']}\n\n- 상속: {', '.join(d['extends'])}. 전사 지침은 그대로 따르고 아래만 덧붙인다.\n"
-            f"- 기반 양식: {base.get('name', '-')} (유사도 {base.get('similarity', '-')})\n- 형식: {FMT[form['fmt']]}\n"
+            f"- 기반 양식: {base.get('name', '-')} (유사도 {base.get('similarity', '-')})\n- 형식: {FMT[form['fmt']]}\n{style}"
             f"- 구성(이 순서와 제목 그대로): {' → '.join(form['outline'])}\n\n## 고정 문구(글자 그대로)\n{blocks}\n\n## 작성 규칙\n{rules}\n\n"
-            f"## 검증\n`evals/`의 과제(메모 → 기대 구성·고정 문구·숫자)로 채점한다. 원문은 저장하지 않았다.\n")
+            f"## 검증\n`evals/`의 과제(메모 → 기대 구성·고정 문구·숫자)로 채점한다. 원문은 저장하지 않았다.\n{forced}")
 
 
 @app.post('/api/skillgen/<jid>/submit')
@@ -1313,8 +1422,26 @@ def skillgen_submit(jid):
         if c['id'] == 'human':
             c['pass'] = thumbs >= need
             c['detail'] = f'{thumbs}/{need}건 확인'
-    if not report.get('auto_pass') or thumbs < need:
-        return err('검증 기준을 모두 통과해야 등록할 수 있습니다' + ('' if report.get('auto_pass') else ' (자동 채점 미통과)'))
+    failed = [c for c in report['criteria'] if not c['pass']]
+    draft.pop('verification', None)
+    if failed:
+        # 미통과 강제 등록: 사유를 남기면 품질 기준(구성·고정 문구·숫자·문체·효과 비교·사람 확인)은 넘길 수 있다.
+        # 스킬 파일 검사 오류(스키마·상속·잠금)와 보안(개인정보)은 넘길 수 없다.
+        if not b.get('force'):
+            return err('검증 기준을 모두 통과해야 등록할 수 있습니다' + ('' if report.get('auto_pass') else ' (자동 채점 미통과)'))
+        if report.get('errors') or any(c['id'] == 'security' for c in failed):
+            return err('스킬 파일 검사 오류와 보안(개인정보) 미통과는 강제 등록으로 넘길 수 없습니다: '
+                       + '; '.join((report.get('errors') or []) + [c['detail'] for c in failed if c['id'] == 'security' and c.get('detail')])[:300])
+        reason = re.sub(r'\s+', ' ', str(b.get('reason') or '')).strip()
+        if len(reason) < 5:
+            return err('강제 등록 사유를 5자 이상 적어 주세요 (PR과 스킬 파일에 남습니다)')
+        who = f"{g.u['name']} {g.u['title']}".strip()
+        names = [c['name'] for c in failed]
+        report['forced'] = {'by': who, 'reason': reason[:200], 'failed': [c['name'] + (f" — {c['detail']}" if c.get('detail') else '') for c in failed], 't': now()}
+        draft['verification'] = {'status': 'forced', 'failed': names, 'reason': reason[:200], 'by': who, 'date': core.today_kr()}
+        errs = skills.validate(draft, skills.all_skills())
+        if errs:                                # 사유에 개인정보가 들어간 경우 등
+            return err('검사 실패: ' + '; '.join(errs))
     analysis = J(j['analysis'], {})
     path = skills.skill_dir(draft)
     files = {f'{path}/kosoe-skill.yaml': skills.dump_skill(draft), f'{path}/SKILL.md': _skill_md(draft, analysis)}
@@ -1324,8 +1451,10 @@ def skillgen_submit(jid):
             {'expect': {'outline': draft['forms'][0]['outline'], 'fixed': [x['text'] for x in draft.get('blocks') or []]},
              'score': {'with': t['with'], 'without': t['without']}}, allow_unicode=True, sort_keys=False)
     r = _open_skill_request('new', {**draft, '_path': path}, files, g.u, report=report, note=j['request'] or '')
-    g.con.execute("update skill_jobs set stage='submitted', report=?, request_id=?, updated=? where id=?",
-                  (json.dumps(report, ensure_ascii=False), r['id'], now(), jid))
+    g.con.execute("update skill_jobs set stage='submitted', skill=?, report=?, request_id=?, updated=? where id=?",
+                  (json.dumps(draft, ensure_ascii=False), json.dumps(report, ensure_ascii=False), r['id'], now(), jid))
+    if report.get('forced'):
+        log(g.u['name'], f"스킬 빌더 ⑤ 검증 미통과 강제 등록 — {draft['id']} · 미통과 {len(failed)}건 · 사유: {report['forced']['reason'][:60]}")
     return ok(request=req_view(r, g.u))
 
 
@@ -1550,6 +1679,7 @@ def sync():
 
 def boot():
     core.init_db()
+    load_ai_choice()
     sync_forms(force=True)
     threading.Thread(target=corp.warm, kwargs={'log': lambda m: None}, daemon=True).start()
 

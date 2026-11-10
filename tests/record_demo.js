@@ -99,7 +99,7 @@ window.__cap = (scene, text, sub) => {
   timings.gen_hwp = await waitBusy('한글 생성');
   await cap('0:20', `한글(.hwp) 완성 — ${timings.gen_hwp.toFixed(0)}초`, '전사 스킬 koscom-hwp-report(커밋 고정)로 조판 · 보고 문법·팩 규칙·원본값 대조 검수 통과');
   await page.evaluate(s => document.querySelector(s)?.scrollIntoView({ block: 'start' }), '#res'); await pause(2500);
-  await click('#res button:has-text("미리보기")'); await page.waitForSelector('.hwpv'); await pause(4000); await closeModal();
+  await click('#res button:has-text("미리보기")'); await page.waitForSelector('.rh-page svg, .hwpl-page', { timeout: 60000 }); await pause(4000); await closeModal();
 
   // 0:50 PPT·웹 제작
   mark('scene', '0:50');
