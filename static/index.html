@@ -578,7 +578,7 @@ function resHtml(doc) {
   return `${updBanner(doc)}<div class="row sp"><b>v${doc.ver} 결과</b><span class="small muted">${esc(doc.updated)}</span></div>
    ${cur.map(f => `<div class="out-f" style="margin-top:8px"><div class="row sp">${fmtTag(f.fmt)}<span class="small muted">${(f.ms / 1000).toFixed(1)}초 · ${kb(f.size)}</span></div>
      <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}${f.fmt !== 'hwp' && f.resolution?.theme_name ? ' · 🎨 ' + esc(f.resolution.theme_name) : ''}</div>
-     <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>
+     <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}${c.note ? `<br><span class="small muted">안내: ${esc(c.note)}</span>` : ''}</span></div>`).join('')}</div>
      <div class="row wrap" style="margin-top:8px"><a class="btn sm" href="/api/docs/${doc.id}/file?fmt=${f.fmt}&ver=${f.ver}">⬇ 받기</a>
        <button class="btn ghost sm" onclick="preview('${doc.id}','${f.fmt}',${f.ver})">👁 미리보기</button>${launchBtn(doc.id, f.fmt, f.ver)}</div></div>`).join('')}
    ${fixable ? `<button class="btn" style="width:100%;justify-content:center" onclick="autoFix('${doc.id}')">🛠 검수 자동 수정 → 새 버전</button>` : ''}
