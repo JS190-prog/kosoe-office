@@ -316,7 +316,7 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 | `KOSOE_OLLAMA_URL` / `KOSOE_OLLAMA_MODEL` | `http://localhost:11434` / — | 사내 Ollama 서버와 모델의 기본값. AI 선택 창에서 주소 · API 키 · 모델을 넣으면 그 값이 우선합니다(모델은 서버에서 불러와 고름) |
 | `KOSOE_OLLAMA_API_KEY` | — | 인증이 걸린 사내 Ollama · ollama.com API 키의 기본값(`Authorization: Bearer`). 로컬 Ollama는 비워 둡니다. 화면에서 넣은 키는 `~/.kosoe`에만 저장되고 끝 4자리만 보입니다 |
 | `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다). 먼저 터미널에서 `bizcoder login`. 모델은 DeepSeek V4 Flash로 고정입니다 |
-| `KOSOE_BIZCODER_REASONING` | `off` | BizCoder 모델의 생각(추론) 수준. `off`(빠름 — 한 번 호출 8~20초) · `low` · `medium` · `high` · `default`(모델 기본 — 17~160초) |
+| `KOSOE_BIZCODER_REASONING` | `off` | BizCoder 모델의 생각(추론) 수준. `off`(빠름 — 초안 한 번 3~20초. 대표 문서 분석만은 모델 기본으로 생각합니다) · `low` · `medium` · `high` · `default`(모델 기본 — 가장 꼼꼼하지만 한 번 20~290초). 끄면 초안이 숫자 · 고정 문구를 빠뜨리는 일이 조금 늘어납니다(아래 「검증 현황」) |
 | `KOSOE_SKILLS_REPO` | `humanist96/kosoe-office-skills` | 스킬 정본 저장소 |
 | `KOSOE_PPT_ENGINE` | `ppt-master` | `ppt-master`(전사 스킬) · `lite`(경량 대체) |
 | `KOSOE_CORP_LOCAL` | — | 원격에 올리기 전의 전사 스킬을 이 PC 저장소에서 쓰기(시험용). `id=폴더;id=폴더`. 그 저장소의 HEAD 커밋으로 고정됩니다 |
@@ -361,6 +361,8 @@ kosoe-office/
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
 | AI 전환 (OpenRouter) | ✅ | `tests/e2e_provider.py` — DeepSeek v4.1 Flash(유료): 추천 11초 · 초안 10초 · 수정 11초, 11회 호출 약 $0.02. Nemotron 3 Ultra(무료): 초안 36초 · 수정 40초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지. 스킬 빌더 검증도 DeepSeek로 12/12 통과 |
 | AI 전환 (NVIDIA API, 무료 체험) | ✅ 느림 주의 | 같은 시험(2026-11-10). Nemotron 3 Ultra: 추천 4초 · 초안 12초 · 수정 13초, 검수 전 항목 통과. DeepSeek v4.1 Flash: 결과는 같게 나오지만 대기열 때문에 연결 시험 91초 · 추천 240초 · 초안 126초 · 수정 121초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지, 비용 $0. 스킬 빌더는 NVIDIA로 시험하지 않았습니다 |
+| 사내 LLM (BizCoder · DeepSeek V4 Flash) | ✅ | 2026-11-10. 연결 시험 3초 · 초안 5초, `tests/e2e_fillform.py` · `tests/e2e_inspect.py` · `tests/e2e_style.py --app` 통과. 스킬 빌더(`tests/e2e_skillgen.py`, 가상 대표 문서 3건, 5회씩): 생각 끔(기본값) ② 분석 12~50초 · ④ 검증 10~13초 · 자동 기준 통과 3/5, `KOSOE_BIZCODER_REASONING=default` ② 13~21초 · ④ 51~286초 · 5/5. 떨어진 2회는 「숫자 · 사실 보존」과 「고정 문구」였습니다 |
+| 사내 LLM (Ollama) | ⚠️ | 주소 · API 키 · 모델 저장, Bearer 전송, 클라우드 모델 가림은 키를 검사하는 가짜 서버로 확인했습니다. **실제 사내 Ollama 서버로는 시험하지 못했습니다** |
 | macOS | ⚠️ | 설치 스크립트 · 경로 · 미리보기를 대응했지만 **실제 맥에서는 아직 실행해 보지 못했습니다** |
 | GitHub Actions 검사 | ⏸ | 워크플로 파일은 스킬 저장소 `tools/ci/`에 보관. 켜려면 토큰에 `workflow` 권한 필요 |
 
@@ -386,7 +388,7 @@ python llm.py                     # AI 어댑터 자체검사 (BizCoder 생각 �
 | 첫 문서 생성이 매우 느림 | 백신의 첫 검사 때문입니다. 🎬 시연 3분 → 🔥 예열을 한 번 누릅니다 |
 | `.hwp` · `.pptx`가 `.pia`로 바뀜 | 사내 보호 도구의 정상 동작입니다. 사내 뷰어로 열립니다. 앱은 보호 도구를 해제하거나 우회하지 않습니다 |
 | `java`를 찾지 못함 | JDK/JRE 8 이상을 설치하고 터미널을 새로 엽니다. macOS는 `brew install openjdk` 후 안내대로 연결합니다 |
-| AI 선택 창에서 NVIDIA API · OpenRouter가 「준비 안 됨」 | `.env`에 `KOSOE_NVIDIA_API_KEY` · `KOSOE_OPENROUTER_API_KEY`가 없습니다. 적은 뒤 앱을 다시 켭니다 |
+| AI 선택 창에서 NVIDIA API · OpenRouter가 「준비 안 됨」 | `.env`에 `KOSOE_NVIDIA_API_KEY` · `KOSOE_OPENROUTER_API_KEY`가 없습니다. 적은 뒤 AI 선택 창을 다시 엽니다(앱을 다시 켜지 않아도 읽습니다) |
 | AI 선택 창에서 BizCoder · Ollama가 「준비 안 됨」 | BizCoder는 터미널에서 `bizcoder login`(CLI가 없으면 `npm i -g bizcoder`). Ollama는 창 안에 서버 주소 · API 키를 넣고 **모델 불러오기**로 모델을 고릅니다. 「쓸 수 없는 모델」이면 서버에서 `ollama pull <모델>` |
 | NVIDIA API로 바꾸니 초안이 1~2분 걸림 | 그 모델의 대기열이 긴 것입니다. 목록에서 다른 모델(Nemotron)을 고르거나 OpenRouter로 바꿉니다 |
 | OpenRouter 연결 시험이 402 · 429로 실패 | 402는 잔액 부족(유료 모델), 429는 무료 모델의 요청 수 제한입니다. 목록에서 다른 모델을 고르거나 OpenRouter 대시보드에서 잔액 · 한도를 확인합니다 |

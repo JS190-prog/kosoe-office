@@ -69,6 +69,10 @@ TOPIC = {   # 처음 만들 때만 쓰는 샘플 주제(없는 양식은 양식 
     'sales-pack:briefing': 'B은행 대상 시세 데이터 API 서비스 브리핑',
     'sales-pack:visit-report': 'C자산운용 운용지원팀 방문 결과(시세 데이터 API 도입 협의)',
     'deck-proposal-u1-287a:main': 'D증권 차세대 트레이딩 시스템 구축 제안',
+    # 서식 채우기형은 요청에 있는 값만 칸에 넣는다 → 가상의 값을 요청에 적어 준다
+    'pb-addon-contract': ('E증권 주식회사(주소 서울특별시 영등포구 ○○로 1, 대표이사 홍 길 동)와 맺는 「고객확인 모니터링 고도화」 추가 업무 이용 계약. '
+                          '기본계약 체결일 2019.03.15, 코스콤 대표이사 김 철 수. 이용료(천원/년): 고객확인 > 모니터링 > 실시간 탐지 회사기본 24,000, '
+                          '고객확인 > 모니터링 > 보고서 자동화 회사기본 12,000'),
 }
 
 
@@ -158,8 +162,9 @@ def main(ids):
             tpl = app.template_for_render(t)
             make = lambda: engines.make(t['fmt'], s['blueprint'], tpl, PEOPLE, 'sample-' + t['id'].replace(':', '-'), 1)  # noqa: E731
             path, warns, _, eng = make()
-            if any(c['fix'] for c in engines.check(s['blueprint'], warns if t['fmt'] == 'hwp' else ())):     # 검수 [자동 수정](doc_fix) 한 번
-                bp, _ = engines.autofix(s['blueprint'], lambda xs: llm.shorten(xs, {'use_llm': True, 'fast': True}), warns)
+            style, fx = app._style_of(t)      # 스킬의 문체 · 글자 그대로 넣는 글(앱 doc_fix 와 같게)
+            if any(c['fix'] for c in engines.check(s['blueprint'], warns if t['fmt'] == 'hwp' else (), style, fx)):     # 검수 [자동 수정](doc_fix) 한 번
+                bp, _ = engines.autofix(s['blueprint'], lambda xs: llm.shorten(xs, {'use_llm': True, 'fast': True}, style), warns, style, fx)
                 s['blueprint'] = checks.fix_skill(bp, {**info, 'fixed': json.loads(t['fixed'] or '[]')}) if info.get('id') else bp
                 json.dump(s, open(sp, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
                 path, warns, _, eng = make()

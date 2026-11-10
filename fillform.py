@@ -35,7 +35,8 @@ def prompt_spec(form):
             bits.append(f"  자료에 없으면 비워 둔다(기본값 '{_default(f)}'이 들어간다)")
         out.append('\n'.join(bits))
     for h, t in tables_of(form):
-        out.append(f"- 표 {t['key']} ({h}): 열 {t['cols']}" + (f" · 단위 {t['unit']}" if t.get('unit') else '')
+        # key 를 칸처럼 맨 앞에 둔다 — '표 이용료'로 적으면 key 를 "표 이용료"로 읽는 모델이 있다(DeepSeek: 표가 통째로 빠짐)
+        out.append(f"- {t['key']} (표 · {h}): 열 {t['cols']}" + (f" · 단위 {t['unit']}" if t.get('unit') else '')
                    + (f" · 필수 열 {t['required']}" if t.get('required') else '') + '\n  행마다 열 이름: 값. 합계 행은 넣지 않는다(자동 계산).')
     return '\n'.join(out)
 

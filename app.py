@@ -428,6 +428,8 @@ def set_net():
 @app.get('/api/ai')
 @login_required
 def ai_get():
+    env = core.load_env()      # .env 에 방금 적은 외부 API 키는 앱을 다시 켜지 않아도 이 창을 열 때 읽는다
+    CFG.update(nv_key=env['nv_key'], or_key=env['or_key'])
     return ok(ai=llm.state(probe=True), usage=llm.usage(), closed=CFG['closed_llm'])
 
 
