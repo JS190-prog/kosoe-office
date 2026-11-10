@@ -650,10 +650,14 @@ def check(bp, warns=(), style=None, fixed=()):
                     'detail': (f'{len(ends)}개 문장형' if st['ending'] == 'noun' else f'{len(ends)}개 개조식(~함·~임)') if ends else '', 'fix': bool(ends)})
     todo = [it['text'] for it in all_items if '확인 필요' in it['text'] or '반영 예정' in it['text'] or any(s in it['text'] for s in slots)]
     empty = [s['heading'] for s in bp['sections'] if not s['items'] and not s.get('table') and not s.get('text')]
+    # 「목차 쪽번호는 문단 높이로 추정한 값」은 목차가 있는 양식이면 늘 붙는 안내라 쪽 넘침·서식 경고로 세지 않고 note로 보여 준다
+    notes = [w for w in warns if w.startswith('목차 쪽번호는')]
+    real = [w for w in warns if w not in notes]
     return out + [
         {'id': 'empty', 'name': '빈 장 없음', 'ok': not empty, 'detail': ', '.join(empty), 'fix': False},
         {'id': 'todo', 'name': '확인 필요 표시 없음', 'ok': not todo, 'detail': f'{len(todo)}곳 — 직접 확인해 주세요' if todo else '', 'fix': False},
-        {'id': 'render', 'name': '한글 쪽 넘침·서식 경고 없음', 'ok': not warns, 'detail': '; '.join(warns)[:200], 'fix': any('[제목]' in w for w in warns)},
+        {'id': 'render', 'name': '한글 쪽 넘침·서식 경고 없음', 'ok': not real, 'detail': '; '.join(real)[:200], 'note': '; '.join(notes)[:200],
+         'fix': any('[제목]' in w for w in real)},
     ]
 
 
@@ -771,6 +775,11 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
     assert [s['heading'] for s in d3['sections']] == ['소요 예산', '예산 현황'] and d3['sections'][0]['items'] == []
     assert d3['sections'][1]['items'][0]['rows'][2] == ['합계', '<', '', '1,000'] and rows[1][1] == ''
     assert [c for c in check(bp3, (), None) if c['id'] == 'empty'][0]['detail'] == '추진 일정'
+    toc = '목차 쪽번호는 문단 높이로 추정한 값 — 한글에서 열어 확인 필요(본문 5쪽 추정)'
+    r = next(c for c in check(bp3, [toc]) if c['id'] == 'render')          # 목차 안내만 있으면 통과 + 안내
+    assert r['ok'] and r['note'] == toc and r['detail'] == ''
+    r = next(c for c in check(bp3, [toc, '[제목] 2줄']) if c['id'] == 'render')
+    assert not r['ok'] and r['detail'] == '[제목] 2줄' and r['fix']
     # 우선협상 결과보고: 요청 문장 전체(request)와 항목에 딸린 표 — 표는 하위 - 뒤, ※ 앞(검사자 표 아래 「※ 후임자 승계」)
     bp4 = {'title': 'X', 'request': 'X를 아래와 같이 진행하고자 합니다.', 'sections': [{'heading': '계약체결', 'items': [
         {'label': '', 'text': '검사자(내부감사부 입회)', 'children': [{'text': '※ 후임자 승계'}, {'text': '세부'}],
