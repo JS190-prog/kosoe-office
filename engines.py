@@ -77,19 +77,24 @@ def _sub(text, kind):
     return {'type': 'note' if m.group(1) == '*' else 'ref', 'text': text[m.end():]} if m else {'type': kind, 'text': text}
 
 
+def _hwp_table(t, table_style):
+    return {'type': 'table', **({'style': table_style} if table_style else {}), **({'unit': t['unit']} if t.get('unit') else {}),
+            'rows': [t['cols']] + t['rows']}
+
+
 def _hwp_items(s, table_style=2):
-    """설계도의 장 하나 → 렌더러 항목(표를 먼저, 그다음 ㅇ 항목과 하위 -, 각주 *, 참고 ※)."""
-    items = []
-    if s.get('table'):
-        t = s['table']
-        items.append({'type': 'table', **({'style': table_style} if table_style else {}), **({'unit': t['unit']} if t.get('unit') else {}),
-                      'rows': [t['cols']] + t['rows']})
+    """설계도의 장 하나 → 렌더러 항목(장의 표를 먼저, 그다음 ㅇ 항목과 하위 -, 각주 *, 참고 ※).
+    항목에 딸린 표(기안문 「ㅇ 검사자」 아래 표)는 그 항목의 하위 - 뒤, 각주 · 참고 앞에 둔다(렌더러는 하위 항목 자리에 표를 그린다)."""
+    items = [_hwp_table(s['table'], table_style)] if s.get('table') else []
     for it in s['items']:
         o = _sub(it['text'], 'o')
         if it.get('label') and o['type'] == 'o':
             o['label'] = it['label']
-        if it.get('children'):
-            o['children'] = [_sub(c['text'], 'dash') for c in it['children']]
+        kids = [_sub(c['text'], 'dash') for c in it.get('children') or []]
+        if it.get('table'):
+            kids = [k for k in kids if k['type'] == 'dash'] + [_hwp_table(it['table'], table_style)] + [k for k in kids if k['type'] != 'dash']
+        if kids:
+            o['children'] = kids
         items.append(o)
     return items
 
@@ -161,13 +166,13 @@ def to_draft(bp):
         items = _hwp_items(s, None)
         if not items and not s.get('text'):        # 기안문 양식의 장 8개 중 쓸 내용이 없는 장은 뺀다
             continue
-        for t in items:                             # 양식의 예산 표: 「합계」 행은 앞 두 칸을 병합
-            if t['type'] == 'table':                # (설계도의 행 목록은 건드리지 않고 새 행으로)
+        for t in items + [k for o in items for k in o.get('children', [])]:   # 양식의 예산 표: 「합계」 행은 앞 두 칸을 병합
+            if t['type'] == 'table':                # (설계도의 행 목록은 건드리지 않고 새 행으로, 항목에 딸린 표도)
                 t['rows'] = [r[:1] + ['<'] + r[2:] if i and len(r) > 2 and r[0].replace(' ', '') in ('합계', '총계') and not r[1].strip()
                              else r for i, r in enumerate(t['rows'])]
         secs.append({'heading': s['heading'], **({'text': s['text']} if s.get('text') else {}), 'items': items})
     rep = {'type': 'draft', 'title': bp['title'], 'basis': basis, 'purpose': bp.get('purpose') or draft_purpose(bp['title']), 'sections': secs}
-    for k in ('recipient', 'attachments'):
+    for k in ('recipient', 'request', 'attachments'):   # request: 팩이 정한 요청 문장 전체(번호 「2.」는 렌더러가 붙임)
         if bp.get(k):
             rep[k] = bp[k]
     return rep
@@ -612,7 +617,11 @@ DATE_RX = checks.DATE_RX
 
 
 def _all_items(bp):
+    """문체 검수 · 자동 수정 대상 항목. 「관련 근거」 장은 문서번호 · 시행일 · 문서 제목을 그대로 옮긴 인용이라 뺀다
+    (90자를 넘는 제목을 AI로 줄이거나 끝말을 바꾸면 근거 문서 제목이 달라진다)."""
     for s in bp['sections']:
+        if '근거' in s['heading']:
+            continue
         for it in s['items']:
             yield it
             for c in it.get('children') or []:
@@ -762,6 +771,22 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
     assert [s['heading'] for s in d3['sections']] == ['소요 예산', '예산 현황'] and d3['sections'][0]['items'] == []
     assert d3['sections'][1]['items'][0]['rows'][2] == ['합계', '<', '', '1,000'] and rows[1][1] == ''
     assert [c for c in check(bp3, (), None) if c['id'] == 'empty'][0]['detail'] == '추진 일정'
+    # 우선협상 결과보고: 요청 문장 전체(request)와 항목에 딸린 표 — 표는 하위 - 뒤, ※ 앞(검사자 표 아래 「※ 후임자 승계」)
+    bp4 = {'title': 'X', 'request': 'X를 아래와 같이 진행하고자 합니다.', 'sections': [{'heading': '계약체결', 'items': [
+        {'label': '', 'text': '검사자(내부감사부 입회)', 'children': [{'text': '※ 후임자 승계'}, {'text': '세부'}],
+         'table': {'cols': ['부서', '구분', '금액'], 'rows': [['A', 'x', '1']]}},
+        {'label': '계정과목', 'text': '기계장치', 'children': []}], 'table': None}]}
+    d4 = to_draft(bp4)
+    assert d4['request'] == 'X를 아래와 같이 진행하고자 합니다.'
+    assert [k['type'] for k in d4['sections'][0]['items'][0]['children']] == ['dash', 'table', 'ref'] and 'children' not in d4['sections'][0]['items'][1]
+    assert d4['sections'][0]['items'][0]['children'][1] == {'type': 'table', 'rows': [['부서', '구분', '금액'], ['A', 'x', '1']]}
+    bp4['sections'][0]['items'][0]['table']['rows'] = [['A', 'x', '1'], ['합계', '', '1']]
+    assert to_draft(bp4)['sections'][0]['items'][0]['children'][1]['rows'][2] == ['합계', '<', '1']    # 항목에 딸린 표도 합계 병합
+    cite = '운영2026-0921(2026. 9. 10. : 차세대 보안위협 대응 솔루션 도입 추진 [품목2]-웹 침해탐지 솔루션 도입 제한경쟁입찰 제안평가 『결과 통보 및 협상절차』 진행 요청)'
+    bp5 = {'title': 'X', 'sections': [{'heading': '관련 근거', 'items': [{'label': '', 'text': cite, 'children': []}], 'table': None},
+                                      {'heading': '계약체결', 'items': [{'label': '계약명', 'text': '웹 침해탐지 솔루션 도입 계약', 'children': []}], 'table': None}]}
+    assert len(cite) > 90 and next(c for c in check(bp5) if c['id'] == 'long')['ok']          # 관련 근거 인용은 길이 · 끝말 검수 · 자동 수정 밖
+    assert autofix(bp5, lambda xs: (['x'] * len(xs), None))[0]['sections'][0]['items'][0]['text'] == cite
     det = to_detail({**bp, 'sections': bp['sections'][1:] + [{'heading': '효과', 'items': [{'label': '가', 'text': '1'}, {'label': '나', 'text': '2'}]}]},
                     {'dept': '팀'})
     assert det['chapters'][0]['sections'][0]['style'] == 'box' and det['chapters'][0]['sections'][0]['heading'] == '배경 : a'

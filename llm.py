@@ -52,16 +52,21 @@ def writing_rules(style=None):
 
 BP_SCHEMA = '{"title": str, "sections": [{"heading": str, "items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]]} | null}]}'
 # 기안문(preset draft): 한글 스킬 기안문 렌더러의 머리(수신자 · 제목) · 요청 문장 · 첨부 목록과 장 제목 줄 · 표 단위를 더 받는다
-DRAFT_KEYS = ('recipient', 'purpose', 'attachments')
-BP_SCHEMA_DRAFT = ('{"recipient": str, "title": str, "purpose": str, "attachments": [str], "sections": [{"heading": str, "text": str, '
-                   '"items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]], "unit": str} | null}]}')
+DRAFT_KEYS = ('recipient', 'purpose', 'request', 'attachments')
+BP_SCHEMA_DRAFT = ('{"recipient": str, "title": str, "purpose": str, "request": str, "attachments": [str], "sections": [{"heading": str, "text": str, '
+                   '"items": [{"label": str, "text": str, "children": [{"text": str}], "table": {"cols": [str], "rows": [[str]], "unit": str} | null}], '
+                   '"table": {"cols": [str], "rows": [[str]], "unit": str} | null}]}')
 DRAFT_GUIDE = ('\n기안문 칸: recipient = 수신자(예: 경영지원부장, 내부결재). title = 결재받을 일(예: ○○ 추진 및 계약 체결 의뢰). '
                'purpose = 요청 문장 「아래와 같이 ○○을 추진하고자 하오니」의 ○○ — 제목에서 「추진 및 계약 체결 의뢰」 같은 꼬리를 뺀 일. '
+               'request = 요청 문장을 통째로 정해 쓸 때만(작성 규칙이 문장 꼴을 정해 줄 때, 예: 위 근거에 의거, ○○을 아래와 같이 진행하고자 합니다.) — '
+               '앞 번호 「2.」는 쓰지 않는다(렌더러가 붙임). 그 밖에는 "". '
                'attachments = 첨부 문서 목록(「문서명 1부」 꼴, 요청 · 첨부 자료에 있는 것만, 없으면 []). '
                '업로드한 첨부 파일(「### 첨부: 파일 이름」)은 하나도 빼지 않고 넣는다 — 문서번호가 있는 근거 문서는 「[문서번호] 문서 제목 (시행일) 1부」, '
                '그 밖의 파일은 파일 이름에서 확장자를 뺀 이름. '
                '구성의 장 가운데 쓸 내용이 없는 장은 items를 [], table을 null, text를 ""로 둔다(문서에서 빠진다 — 「(확인 필요)」로 채우지 않는다). '
                '장의 text = 장 제목 줄에 「제목 : 내용」으로 붙일 한 줄(필요할 때만, 없으면 ""). 표의 unit = 표 위 단위(예: (단위 : 원, 부가세 별도), 없으면 ""). '
+               '장의 table은 장 첫머리에 놓인다. 항목 바로 아래에 붙는 표(예: ㅇ 검사자 아래 검사자 표)는 그 항목의 table에 넣는다(한 장에 표가 여럿이어도 된다). '
+               '표 칸 병합: 왼쪽 칸과 합치면 "<", 위 칸과 합치면 "^"(cols에도 쓸 수 있다). '
                '하위 항목 중 각주는 text를 「* 」로, 참고는 「※ 」로 시작한다.')
 
 MASK_RX = {
@@ -665,6 +670,13 @@ def _plain(v):
     return re.sub(r'\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`', lambda m: next(g for g in m.groups() if g is not None), str(v if v is not None else '')).strip()
 
 
+def _clean_table(tb):
+    if not (isinstance(tb, dict) and tb.get('cols') and tb.get('rows')):
+        return None
+    return {'cols': [_plain(c) for c in tb['cols']], 'rows': [[_plain(c) for c in r] for r in tb['rows']][:12],
+            **({'unit': _plain(tb['unit'])} if _plain(tb.get('unit')) else {})}
+
+
 def _clean_bp(bp, outline):
     secs = []
     for s in bp.get('sections') or []:
@@ -672,15 +684,13 @@ def _clean_bp(bp, outline):
         for it in s.get('items') or []:
             if isinstance(it, str):
                 it = {'label': '', 'text': it}
-            items.append({'label': _plain(it.get('label'))[:12], 'text': _plain(it.get('text')),
-                          'children': [{'text': _plain(c.get('text') if isinstance(c, dict) else c)} for c in (it.get('children') or [])][:3]})
-        tb = s.get('table')
-        if tb and tb.get('cols') and tb.get('rows'):
-            tb = {'cols': [_plain(c) for c in tb['cols']], 'rows': [[_plain(c) for c in r] for r in tb['rows']][:12],
-                  **({'unit': _plain(tb['unit'])} if _plain(tb.get('unit')) else {})}
-        else:
-            tb = None
-        sec = {'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb}
+            o = {'label': _plain(it.get('label'))[:12], 'text': _plain(it.get('text')),
+                 'children': [{'text': _plain(c.get('text') if isinstance(c, dict) else c)} for c in (it.get('children') or [])][:3]}
+            tb = _clean_table(it.get('table'))      # 기안문: 항목 바로 아래 표(한 장에 표가 여럿 — 계약내역 · 검사자)
+            if tb:
+                o['table'] = tb
+            items.append(o)
+        sec = {'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': _clean_table(s.get('table'))}
         if _plain(s.get('text')):                   # 기안문: 장 제목 줄에 붙이는 한 줄
             sec['text'] = _plain(s['text'])
         secs.append(sec)
@@ -688,6 +698,8 @@ def _clean_bp(bp, outline):
     for k in ('recipient', 'purpose'):              # 기안문 머리 수신자 · 요청 문장의 추진하는 일
         if _plain(bp.get(k)):
             out[k] = _title(bp[k])
+    if _plain(bp.get('request')):                   # 기안문 요청 문장 전체(팩이 문장 꼴을 정할 때) — 제목보다 길 수 있다
+        out['request'] = re.sub(r'\s+', ' ', _plain(bp['request']))[:200]
     atts = [_plain(a) for a in (bp.get('attachments') or []) if isinstance(a, str) and _plain(a)]
     if atts:                                        # 기안문 첨부 목록
         out['attachments'] = atts[:15]
@@ -726,11 +738,11 @@ def draft_post(bp, files):
     named = [(f, stem) for f, stem in named if stem]
     secs = [s for s in bp['sections'] if s['items'] or s.get('table') or s.get('text')]
     out = {**bp, 'sections': secs or bp['sections'][:1]}
-    atts = [re.sub(r'_+', ' ', a) for a in bp.get('attachments') or []]     # 파일 이름의 밑줄은 문서에서 띄어쓰기로
+    atts = list(bp.get('attachments') or [])       # 파일 이름의 밑줄은 그대로(실제 기안문: 「견적서_가나보안(…) 1부」)
     for f, stem in named:                           # 파일마다 첨부 한 줄: 없으면 붙이고, 제목 · 파일 이름으로 두 번 적혔으면 앞의 것만
         hit = [i for i, a in enumerate(atts) if _same(f, stem, a)]
         if not hit:
-            atts.append(re.sub(r'_+', ' ', stem) + ' 1부')
+            atts.append(stem + ' 1부')
         atts = [a for i, a in enumerate(atts) if i not in hit[1:]]
     if atts:
         out['attachments'] = atts[:15]
@@ -1043,6 +1055,13 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
     assert c['sections'][0]['text'] == '소요 예산 신규 배정' and c['sections'][0]['table']['unit'] == '(단위 : 원)'
     c = _clean_bp({'title': 'T', 'sections': [{'heading': 'h', 'items': [], 'table': {'cols': ['a'], 'rows': [['1']]}}]}, [])
     assert set(c) == {'title', 'sections'} and set(c['sections'][0]) == {'heading', 'items', 'table'} and 'unit' not in c['sections'][0]['table']
+    # 기안문: 요청 문장 전체(request, 제목 길이 제한 없음)와 항목 바로 아래 표(item.table) — 빈 표는 키를 만들지 않는다
+    req = '위 근거에 의거, 웹 침해탐지 솔루션 도입 제한경쟁입찰(협상에 의한 계약) 우선협상 결과보고 및 계약체결을 아래와 같이 진행하고자 합니다.'
+    c = _clean_bp({'title': 'T', 'request': req, 'sections': [{'heading': '계약체결', 'items': [
+        {'label': '', 'text': '검사자(내부감사부 입회)', 'children': ['※ 후임자 승계'], 'table': {'cols': ['부서', '담당자'], 'rows': [['A', '**B**']]}},
+        {'label': '계정과목', 'text': '기계장치', 'table': {'cols': [], 'rows': []}}]}]}, [])
+    assert c['request'] == req and _clean_bp({'title': 'T', 'request': req * 2, 'sections': []}, [])['request'] == req * 2   # 제목(80자)과 달리 자르지 않음
+    assert c['sections'][0]['items'][0]['table'] == {'cols': ['부서', '담당자'], 'rows': [['A', 'B']]} and 'table' not in c['sections'][0]['items'][1]
     # 기안문 마무리: 내용 없는 장은 빼고(장 제목 줄만 있는 장은 남김), 업로드 파일은 첨부 목록에 빠짐없이(이미 있으면 그대로)
     it = {'label': '', 'text': 'x', 'children': []}
     d = draft_post({'title': 'T', 'attachments': ['[기획2026-1] 기획2026-1_계획 (2026. 1. 2.) 1부'], 'sections': [
@@ -1050,14 +1069,14 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
         {'heading': '계약 사항', 'items': [], 'table': None}, {'heading': '소요 예산', 'items': [], 'table': None, 'text': '1,000원'}]},
         [{'name': '기획2026-1_계획.hwp'}, {'name': '시연메모_고객 세미나.txt'}, {'name': 'E증권(가상).pptx'}])
     assert [s['heading'] for s in d['sections']] == ['추진 개요', '소요 예산']          # 빈 관련 근거도 빠짐(번호 없는 한 문장으로 시작)
-    assert d['attachments'] == ['[기획2026-1] 기획2026-1 계획 (2026. 1. 2.) 1부', '시연메모 고객 세미나 1부', 'E증권(가상) 1부']
+    assert d['attachments'] == ['[기획2026-1] 기획2026-1_계획 (2026. 1. 2.) 1부', '시연메모_고객 세미나 1부', 'E증권(가상) 1부']
     assert 'attachments' not in draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}]}, [])
     d = draft_post({'title': 'T', 'sections': [{'heading': '관련 근거', 'items': [dict(it, text='총무2026-1(2026. 1. 2. : 보고)')], 'table': None}]},
                    [{'name': 'a.txt'}])
     assert [x['text'] for x in d['sections'][0]['items']] == ['총무2026-1(2026. 1. 2. : 보고)']       # AI가 쓴 근거는 그대로
     d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}], 'attachments': ['2026 고객 세미나 준비 메모 1부']},
                    [{'name': '시연메모_고객세미나.txt', 'text': '\n2026 고객 세미나 준비 메모 (가상)\n- 행사명: …'}, {'name': '영업제안_B증권.pptx', 'text': '사례'}])
-    assert d['attachments'] == ['2026 고객 세미나 준비 메모 1부', '영업제안 B증권 1부'], d['attachments']   # 메모를 제목으로 이미 적음
+    assert d['attachments'] == ['2026 고객 세미나 준비 메모 1부', '영업제안_B증권 1부'], d['attachments']   # 메모를 제목으로 이미 적음
     d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
                     'attachments': ['2026 고객 세미나 준비 메모 1부', '시연메모_고객세미나 1부', '견적서 1부']},
                    [{'name': '시연메모_고객세미나.txt', 'text': '2026 고객 세미나 준비 메모 (가상)'}])
@@ -1065,9 +1084,13 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
     d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
                     'attachments': ['[총무2026-0315] 회의실 화상회의 장비 교체 수요 조사 결과 (2026. 4. 10.) 1부']},
                    [{'name': '총무2026-0315_화상회의장비_수요조사결과.hwp'}, {'name': '화상회의장비_견적서.txt'}])
-    assert d['attachments'][1:] == ['화상회의장비 견적서 1부'], d['attachments']          # 근거 공문은 제목으로 이미 있음 → 견적서만 붙인다
+    assert d['attachments'][1:] == ['화상회의장비_견적서 1부'], d['attachments']          # 근거 공문은 제목으로 이미 있음 → 견적서만 붙인다
     d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
                     'attachments': ['[기획2026-158] 창립 50주년 기념 리브랜딩 계획 (2026. 6. 30.) 1부', '시연_메모 1부']},
                    [{'name': '근거공문.hwp', 'text': '문서번호 기획2026-158 시행일 2026. 6. 30.'}, {'name': '시연_메모.txt'}])
-    assert d['attachments'] == ['[기획2026-158] 창립 50주년 기념 리브랜딩 계획 (2026. 6. 30.) 1부', '시연 메모 1부'], d['attachments']
+    assert d['attachments'] == ['[기획2026-158] 창립 50주년 기념 리브랜딩 계획 (2026. 6. 30.) 1부', '시연_메모 1부'], d['attachments']
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
+                    'attachments': ['[운영2026-0921] 제안평가 결과 통보 (2026. 9. 10.) 1부', '견적서_가나보안(웹 침해탐지 솔루션 도입) 1부']},
+                   [{'name': '첨부05_관련근거_운영2026-0921.hwp', 'text': '수신자 :'}])
+    assert d['attachments'][1] == '견적서_가나보안(웹 침해탐지 솔루션 도입) 1부' and len(d['attachments']) == 2   # 문서명의 밑줄은 그대로
     print('llm selftest OK')

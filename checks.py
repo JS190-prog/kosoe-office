@@ -267,16 +267,19 @@ def company_names(skill):
 
 def bp_text(bp):
     lines = [bp.get('title', '')]
+
+    def table(tb):
+        if tb and tb.get('rows'):
+            cols = tb.get('cols') or []
+            for r in tb['rows']:
+                lines.append(' '.join(f'{c} {v}' if j and j < len(cols) else str(v) for j, (c, v) in enumerate(zip([''] + cols[1:], r))))
     for s in bp.get('sections') or []:
         lines.append(s.get('heading', ''))
         for it in s.get('items') or []:
             lines.append(f"{it.get('label', '')} {it.get('text', '')}".strip())
             lines += [c.get('text', '') for c in it.get('children') or []]
-        tb = s.get('table')
-        if tb and tb.get('rows'):
-            cols = tb.get('cols') or []
-            for r in tb['rows']:
-                lines.append(' '.join(f'{c} {v}' if j and j < len(cols) else str(v) for j, (c, v) in enumerate(zip([''] + cols[1:], r))))
+            table(it.get('table'))                  # 기안문: 항목에 딸린 표
+        table(s.get('table'))
     return '\n'.join(lines)
 
 

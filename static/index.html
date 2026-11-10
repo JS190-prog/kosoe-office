@@ -495,8 +495,9 @@ function renderEd() {
     + bp.sections.map((s, i) => `<div class="sec-ed">
       <div class="h"><span class="no">${String(i + 1).padStart(2, '0')}</span><input value="${esc(s.heading)}" oninput="CMP.blueprint.sections[${i}].heading=this.value;dirty()">
         <button class="btn ghost sm" onclick="mvSec(${i},-1)" title="위로">↑</button><button class="btn ghost sm" onclick="mvSec(${i},1)" title="아래로">↓</button><button class="x" onclick="CMP.blueprint.sections.splice(${i},1);renderEd();dirty()" title="장 삭제">✕</button></div>
-      ${s.items.map((it, j) => itemRow(i, j, it) + (it.children || []).map((c, k) => `<div class="item child"><span class="muted">–</span><textarea rows="1" oninput="CMP.blueprint.sections[${i}].items[${j}].children[${k}].text=this.value;grow(this);dirty()">${esc(c.text)}</textarea><button class="x" onclick="CMP.blueprint.sections[${i}].items[${j}].children.splice(${k},1);renderEd();dirty()">✕</button></div>`).join('')).join('')}
-      ${s.table ? tblEd(i, s.table) : ''}
+      ${s.items.map((it, j) => itemRow(i, j, it) + (it.children || []).map((c, k) => `<div class="item child"><span class="muted">–</span><textarea rows="1" oninput="CMP.blueprint.sections[${i}].items[${j}].children[${k}].text=this.value;grow(this);dirty()">${esc(c.text)}</textarea><button class="x" onclick="CMP.blueprint.sections[${i}].items[${j}].children.splice(${k},1);renderEd();dirty()">✕</button></div>`).join('')
+        + (it.table ? tblEd(`CMP.blueprint.sections[${i}].items[${j}]`, it.table) : '')).join('')}
+      ${s.table ? tblEd(`CMP.blueprint.sections[${i}]`, s.table) : ''}
       <div class="row" style="margin-top:4px"><button class="btn ghost sm" onclick="CMP.blueprint.sections[${i}].items.push({label:'',text:'',children:[]});renderEd()">+ 항목</button>
         ${s.table ? '' : `<button class="btn ghost sm" onclick="CMP.blueprint.sections[${i}].table={cols:['구분','값'],rows:[['','']]};renderEd();dirty()">+ 표</button>`}</div></div>`).join('')
     + `<button class="btn ghost" onclick="CMP.blueprint.sections.push({heading:'새 장',items:[{label:'',text:'',children:[]}],table:null});renderEd();dirty()">+ 장 추가</button>`;
@@ -511,12 +512,13 @@ function itemRow(i, j, it) {
 function cnt(t) { const c = t.nextElementSibling; const n = t.value.length; c.textContent = n + '/90'; c.classList.toggle('over', n > 90); }
 function grow(t) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }
 function mvSec(i, d) { const s = CMP.blueprint.sections, j = i + d; if (j < 0 || j >= s.length) return; [s[i], s[j]] = [s[j], s[i]]; renderEd(); dirty(); }
-function tblEd(i, t) {
-  return `<div class="tbl-ed"><table><tr>${t.cols.map((c, k) => `<th contenteditable oninput="CMP.blueprint.sections[${i}].table.cols[${k}]=this.innerText;dirty()">${esc(c)}</th>`).join('')}</tr>
-    ${t.rows.map((r, ri) => `<tr>${t.cols.map((_, k) => `<td contenteditable oninput="CMP.blueprint.sections[${i}].table.rows[${ri}][${k}]=this.innerText;dirty()">${esc(r[k] ?? '')}</td>`).join('')}</tr>`).join('')}</table></div>
-    <div class="row small"><button class="btn ghost sm" onclick="tblAdd(${i},'r')">+ 행</button><button class="btn ghost sm" onclick="tblAdd(${i},'c')">+ 열</button><button class="btn red sm" onclick="CMP.blueprint.sections[${i}].table=null;renderEd();dirty()">표 삭제</button><span class="muted">숫자 열은 PPT·웹에서 차트로 그려집니다</span></div>`;
+// p = 표를 가진 설계도 칸의 식(장 `CMP.blueprint.sections[i]` 또는 기안문 항목 `…items[j]` — 항목 바로 아래 표)
+function tblEd(p, t) {
+  return `<div class="tbl-ed"><table><tr>${t.cols.map((c, k) => `<th contenteditable oninput="${p}.table.cols[${k}]=this.innerText;dirty()">${esc(c)}</th>`).join('')}</tr>
+    ${t.rows.map((r, ri) => `<tr>${t.cols.map((_, k) => `<td contenteditable oninput="${p}.table.rows[${ri}][${k}]=this.innerText;dirty()">${esc(r[k] ?? '')}</td>`).join('')}</tr>`).join('')}</table></div>
+    <div class="row small"><button class="btn ghost sm" onclick="tblAdd(${p}.table,'r')">+ 행</button><button class="btn ghost sm" onclick="tblAdd(${p}.table,'c')">+ 열</button><button class="btn red sm" onclick="${p}.table=null;renderEd();dirty()">표 삭제</button><span class="muted">숫자 열은 PPT·웹에서 차트로 그려집니다</span></div>`;
 }
-function tblAdd(i, w) { const t = CMP.blueprint.sections[i].table; if (w === 'r') t.rows.push(t.cols.map(() => '')); else { t.cols.push('새 열'); t.rows.forEach(r => r.push('')); } renderEd(); dirty(); }
+function tblAdd(t, w) { if (w === 'r') t.rows.push(t.cols.map(() => '')); else { t.cols.push('새 열'); t.rows.forEach(r => r.push('')); } renderEd(); dirty(); }
 function dirty() {
   $('#saved').textContent = '저장 중…'; clearTimeout(saveT);
   saveT = setTimeout(async () => { const d = await api(`/api/compose/${CMP.id}`, {method: 'PUT', body: {blueprint: CMP.blueprint}}); CMP.blueprint = d.compose.blueprint; $('#saved').textContent = '✓ 저장됨'; }, 600);
