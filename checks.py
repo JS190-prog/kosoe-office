@@ -241,6 +241,30 @@ def slots_of(fixed_texts):
     return out
 
 
+# ───────────── 저장소에 올릴 때 — 대표 문서의 글·값이 드러나지 않게 ─────────────
+def public_score(sc):
+    """채점 결과를 저장소에 올릴 모양으로: 빠진 숫자·새 숫자는 값(대표 문서에서 온 숫자) 대신 건수만 남긴다."""
+    return {'struct': sc.get('struct'), 'fixed': sc.get('fixed'), 'lost': len(sc.get('lost') or []), 'new': len(sc.get('new') or []),
+            'grammar': list(sc.get('grammar') or [])}
+
+
+def company_names(skill):
+    """스킬 글(이름·구성·고정 문구·규칙)에서 회사 이름으로 보이는 글 — 등록 전에 화면에 알려 준다(막지는 않는다)."""
+    import llm
+    parts = [str(skill.get('name') or '')] + [str(r) for r in skill.get('rules') or []]
+    for f in skill.get('forms') or []:
+        parts += [str(f.get('name') or '')] + [str(h) for h in f.get('outline') or []]
+    parts += [str(b.get('text') or '') for b in skill.get('blocks') or []]
+    out = []
+    for line in '\n'.join(parts).splitlines():
+        if '가상' in line:                       # '(가상)'이라고 밝힌 줄은 알리지 않는다
+            continue
+        for m in llm.MASK_RX['고객사명'].finditer(line):
+            if m.group(0) not in out:
+                out.append(m.group(0))
+    return out[:8]
+
+
 def bp_text(bp):
     lines = [bp.get('title', '')]
     for s in bp.get('sections') or []:
