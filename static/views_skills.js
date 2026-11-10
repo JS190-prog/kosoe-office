@@ -182,7 +182,19 @@ function sbEvalHtml() {
      <button class="btn o" ${all ? '' : 'disabled'} onclick="sbSubmit()">📮 ⑤ 등록 요청 (브랜치 · PR${SB.draft.scope === 'user' ? ' · 자동 검사 후 병합' : ' · 관리자 승인'})</button>
      ${all ? '' : `<span class="small muted">모든 기준을 통과해야 열립니다</span>
        <button class="btn red" ${R.can_force === false ? 'disabled' : ''} onclick="sbForce()" title="미통과 항목과 사유를 PR·스킬 파일에 남기고 등록합니다">⚠️ 미통과 항목이 있어도 등록</button>
-       ${R.can_force === false ? '<span class="small" style="color:var(--bad)">스킬 파일 검사 오류·보안(개인정보) 미통과는 강제 등록할 수 없습니다</span>' : ''}`}</div>`;
+       ${R.can_force === false ? '<span class="small" style="color:var(--bad)">스킬 파일 검사 오류·보안(개인정보) 미통과는 강제 등록할 수 없습니다</span>' : ''}`}</div>
+   ${sbUploadNote(R.upload)}`;
+}
+// 등록하면 저장소에 무엇이 올라가는지(공개 저장소인지, 스킬 글에 회사 이름으로 보이는 글이 있는지) 미리 알려 준다
+function sbUploadNote(u) {
+  if (!u) return '';
+  const pub = u.visibility === 'public';
+  return `<div class="out-f small" style="margin-top:10px;${pub ? 'border-color:var(--o)' : ''}">
+    <b>등록하면 올라가는 곳</b> <code>${esc(u.repo)}</code> ${pub ? '<span class="chip o">공개 저장소 — 누구나 볼 수 있음</span>' : u.visibility ? '<span class="chip">비공개 저장소</span>' : ''}<br>
+    올라가는 것: ${u.files.map(esc).join(' · ')}<br>
+    <b>올라가지 않는 것</b>: ${esc(u.not_uploaded)} — 이 PC에만 남습니다.
+    ${u.names.length ? `<br><span style="color:var(--bad)">스킬 글에 회사 이름으로 보이는 글이 있습니다: <b>${u.names.map(esc).join(', ')}</b></span> — 실제 고객사라면 위 ③에서 <code>[고객사명]</code> 같은 칸으로 바꾼 뒤 다시 검증하세요.` : ''}
+    ${pub ? '<br><span class="muted">고정 문구와 작성 규칙은 스킬의 내용이라 그대로 올라갑니다. 실제 문서의 문장이 들어 있지 않은지 ③에서 확인하세요.</span>' : ''}</div>`;
 }
 // 검증 미통과 강제 등록: 미통과 항목을 보여 주고 사유를 받아, PR 본문 · 스킬 파일(verification) · SKILL.md에 남긴다
 function sbForce() {

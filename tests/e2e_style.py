@@ -85,6 +85,21 @@ def unit():
     expect('제목은 한 줄(표지 글 여러 줄이 와도 첫 줄만 — 받기 파일 이름·헤더에 쓰임)', llm._title('계약서\n([추가 업무명])\n코쇠금융IT') == '계약서' and llm._title('') == '문서')
     expect('style 값 검사', checks.validate_style({'ending': 'x'}) and not checks.validate_style({'ending': 'plain', 'date': 'Y.MM.DD', 'max_len': 0}))
 
+    print('⑤ 등록할 때 저장소에 올리는 파일 — 대표 문서의 글·값은 올리지 않는다')
+    import app as A
+    draft = {'id': 't-u1-x', 'name': '시험 팩', 'scope': 'user', 'owner': 'u1', 'version': '1.0.0', 'extends': ['corp:koscom-hwp-report'],
+             'forms': [{'id': 'main', 'name': '시험', 'fmt': 'hwp', 'desc': '대표 문서 1건', 'outline': ['제1조 목적']}],
+             'blocks': [{'id': 'b1', 'heading': '제1조 목적', 'text': 'Z증권 주식회사(이하 "갑")와 코쇠금융IT는 이 계약을 체결한다.'}], 'rules': []}
+    sc = {'struct': 1.0, 'fixed': True, 'lost': ['24,000천원', '30만명'], 'new': ['2건'], 'grammar': []}
+    rep = {'criteria': [{'id': 'numbers', 'name': '숫자·사실 보존', 'pass': False, 'detail': "빠짐 ['24,000천원', '30만명'] 새 숫자 ['2건']"}],
+           'tasks': [{'doc': '원문_가나다고객.hwp', 'memo': '다음 메모로 써 줘.\n가나다고객 주식회사 이용료 24,000천원\n활동고객수 30만명', 'with': sc, 'without': sc}]}
+    files = A._skill_files(draft, rep, {})
+    body = '\n'.join(files.values()) + A._report_md(rep)
+    expect('검증 과제 메모(prompt.md)는 올리지 않음', not any(k.endswith('prompt.md') for k in files), str([k.rsplit('/', 1)[-1] for k in files]))
+    expect('메모의 글 · 숫자 · 문서 파일 이름이 스킬 파일과 PR 본문에 없음', all(s not in body for s in ('가나다고객', '24,000', '30만명', '원문_')))
+    expect('채점 결과는 건수로', "'lost': 2" in str(checks.public_score(sc)) and '빠진 숫자 2건 · 새 숫자 1건' in A._report_md(rep))
+    expect('스킬 글의 회사 이름으로 보이는 글을 알려 줌', checks.company_names(draft) == ['Z증권'], str(checks.company_names(draft)))
+
 
 def app(force):
     from e2e_skillgen import call, BASE, op

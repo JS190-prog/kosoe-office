@@ -684,8 +684,19 @@ def fill_engine(cid):
     return {'corp': cid, 'name': f'{cid} · 서식 채우기', 'sha': (c.get('sha') or '')[:7]}
 
 
-def make(fmt, bp, template, people, doc_id, ver):
+def themable(fmt, template):
+    """문서 테마를 입힐 수 있는 문서인가. 테마는 기본 디자인(PPT koscom-chevron 덱 · 웹 kosoe 원고)의 색·도형을 바꾸는 것이라,
+    한글과 덱·원고를 따로 고른 양식(preset deck:… · web:…)은 그 디자인 그대로 둔다 — 입히면 두 디자인이 섞인다."""
+    import ppt_chevron
+    import webslide
+    p = template.get('preset') or ''
+    return (fmt == 'ppt' and ppt_chevron.deck_name(p) == ppt_chevron.DECKS[0]) or (fmt == 'web' and webslide.template_id(p) == 'kosoe')
+
+
+def make(fmt, bp, template, people, doc_id, ver, theme=None):
+    """theme: 문서 테마(doc_themes) — PPT·웹의 겉모습만 바꾼다. 한글은 양식 그대로."""
     t0 = time.time()
+    theme = theme if themable(fmt, template) else None
     ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html'}[fmt]
     path = out_path(doc_id, ver, ext)
     jd = job_dir(doc_id, ver)
@@ -704,7 +715,7 @@ def make(fmt, bp, template, people, doc_id, ver):
             if CFG['ppt_engine'] != 'ppt-master':
                 raise RuntimeError('설정: 경량 PPT 엔진')
             import ppt_chevron
-            ppt_chevron.make(bp, template, people, path, jd)
+            ppt_chevron.make(bp, template, people, path, jd, theme)
         except Exception as e:
             import run_ppt_master
             run_ppt_master.patch()
@@ -714,7 +725,7 @@ def make(fmt, bp, template, people, doc_id, ver):
     else:
         try:
             import webslide
-            webslide.make(bp, template, people, path, jd, template.get('chain_names'))
+            webslide.make(bp, template, people, path, jd, template.get('chain_names'), theme)
         except Exception as e:
             make_web(bp, template, people, path)
             warns.append(f'[웹] 전사 webslide 대신 경량 웹 렌더러 사용: {str(e)[:120]}')

@@ -145,7 +145,9 @@ def _other(s, bp, template, people, chips, body):
     return s[:secs[0].start()] + NOTES.sub('', cover) + body + NOTES.sub('', close) + s[secs[-1].end():]
 
 
-def make(bp, template, people, path, job_dir, chain=None):
+def make(bp, template, people, path, job_dir, chain=None, theme=None):
+    """theme: 문서 테마(doc_themes) — 테마 CSS를 얹고, 휴대폰·스크립트 꺼진 미리보기에서도 보이게 한다."""
+    import doc_themes
     root = corp.path(WS)
     tid = template_id(template.get('preset'))
     deck = os.path.join(job_dir, 'web')
@@ -191,6 +193,8 @@ def make(bp, template, people, path, job_dir, chain=None):
         data['charts'] = charts
         return m.group(1) + json.dumps(data, ensure_ascii=False) + m.group(3)
     s = re.sub(r'(<script type="application/json" id="deck-data">)(.*?)(</script>)', dd, s, count=1, flags=re.S)
+    if tid == 'kosoe':      # 문서 테마 · 세로 읽기 화면은 kosoe 원고 기준 — 다른 원고(motion · scrolline · three)는 그 원고 그대로
+        s = doc_themes.web_apply(s, theme)
     open(ip, 'w', encoding='utf-8').write(s)
 
     r = subprocess.run([sys.executable, os.path.join(root, 'scripts', 'build_single.py'), deck, path, '--referenced-only'],
