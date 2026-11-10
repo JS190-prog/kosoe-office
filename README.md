@@ -253,6 +253,28 @@ flowchart LR
 
 PPT 변환이 실패하면 경량 렌더러로, AI 호출이 실패하면 규칙 기반으로 바꿔 계속 동작하고, 화면에 대체했다고 표시합니다.
 
+#### 한글 스킬은 목적마다 따로 (서식 채우기형)
+
+한글 문서는 목적마다 모양이 전혀 다릅니다. 보고서는 개조식 문단을 조립하면 되지만, 계약서 · 공문은 조항과 서명란이 정해져 있어 보고서 스킬로 만들면 보고서 모양으로 나옵니다. 그래서 **목적별 한글 스킬**을 따로 두고, 잠금 파일에 `kind: hwp-fill`로 올립니다.
+
+```yaml
+# registry/corp.lock.yaml
+koscom-hwp-pb-contract:                 # PB 전산서비스 추가업무 이용 계약서
+  repo: humanist96/koscom-hwp-pb-contract
+  sha: <고정할 커밋>
+  kind: hwp-fill
+```
+
+| | 보고서 스킬 (`koscom-hwp-report`) | 서식 채우기형 스킬 (`kind: hwp-fill`) |
+|---|---|---|
+| 방식 | 문단 블록을 조립 | 실제 문서에서 바뀌는 글만 `{{칸}}`으로 비운 서식에 값을 넣음 |
+| 설계도 | 장 · 항목 · 표를 AI가 작성 | 장 = 칸 묶음, 항목 = 칸(이름 · 값), 표 = 반복 행. 조항 문장은 서식에 있어 AI가 쓰지 않음 |
+| 양식 카드 | `registry/corp.forms.yaml` | 스킬의 `form.yaml`이 곧 전사 양식 카드 |
+| 검수 | 보고 문법 · 팩 규칙 | 필수 칸 · 칸 형식 · 표(합계 자동) |
+| 만드는 형식 | 한글 · PPT · 웹 | 그 서식의 한글 파일만 |
+
+스킬 폴더에는 `form.yaml`(칸 정의) · `templates/*.hwp`(서식) · `scripts/*.jar`(`FillRenderer`)가 있으면 됩니다. 앱은 `fillform.py`로 칸 ↔ 설계도 ↔ `values.json`을 바꿔 주기만 하므로, 새 목적의 스킬을 올릴 때 앱 코드를 고치지 않습니다. 원격에 올리기 전에는 `.env`의 `KOSOE_CORP_LOCAL=<스킬 id>=<폴더>`로 이 PC의 저장소를 바로 씁니다.
+
 ### 스킬 상속
 
 ```mermaid
@@ -287,6 +309,7 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 | `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(시연: 같은 모델) · `rule` |
 | `KOSOE_SKILLS_REPO` | `humanist96/kosoe-office-skills` | 스킬 정본 저장소 |
 | `KOSOE_PPT_ENGINE` | `ppt-master` | `ppt-master`(전사 스킬) · `lite`(경량 대체) |
+| `KOSOE_CORP_LOCAL` | — | 원격에 올리기 전의 전사 스킬을 이 PC 저장소에서 쓰기(시험용). `id=폴더;id=폴더`. 그 저장소의 HEAD 커밋으로 고정됩니다 |
 | `KOSOE_HOME` | `~/.kosoe` | 문서 · 기록 · 캐시 폴더 |
 | `KOSOE_PORT` | `8810` | 포트 |
 
@@ -304,6 +327,7 @@ kosoe-office/
 ├─ ppt_chevron.py      PPT 어댑터 (셰브론 SVG → ppt-master)
 ├─ webslide.py         웹 어댑터 (koscom-webslide)
 ├─ checks.py           팩 규칙 검수 · 원본값 대조 · 고정 문구 보장
+├─ fillform.py         서식 채우기형 한글 스킬 — form.yaml(칸) ↔ 설계도 ↔ values.json · 칸 검수
 ├─ extract.py          첨부 읽기 (xlsx · pptx · docx · pdf · hwp · html · csv · txt)
 ├─ doctor.py           설치 점검
 ├─ static/             화면 (index.html · views_skills.js · hwp_preview.js · ai_select.js · 서체 · Chart.js)
@@ -321,6 +345,7 @@ kosoe-office/
 | 세 형식 생성 (전사 스킬 엔진) | ✅ | `tests/smoke_engines.py`, 결과 파일을 PowerPoint · 한컴 뷰어로 확인 |
 | 스킬 변경 → PR → 승인 → 반영 → 복구 | ✅ | 실제 GitHub PR로 확인 |
 | ★ 스킬 빌더 (분석 → 검증 → 등록) | ✅ | `tests/e2e_skillgen.py` — 스킬 사용 12/12, 미사용 3~6/12 |
+| 목적별 한글 스킬 (PB 추가업무 계약서, 서식 채우기형) | ✅ 이 PC 저장소로 | `tests/e2e_fillform.py` — 가상 요청으로 칸 초안(금액 단위 · 날짜 형식 맞춤, 주지 않은 값은 비움) → 채팅 수정 → 한글 생성 → 필수 칸 · 형식 · 표 검수. 결과를 한컴 뷰어와 앱 미리보기에서 원본 서식 모양으로 확인. 스킬 저장소가 아직 원격에 없어 `KOSOE_CORP_LOCAL`로 시험했습니다 |
 | 보고서가 아닌 문서로 스킬 만들기 · 강제 등록 | ✅ | `tests/e2e_style.py` — 가상 계약서 1건: 문체를 서술형 · `2019.03.15` · 250자로 재고, 검증 사용 4/4 vs 미사용 0/4. 사람 확인 없이 강제 등록 → 사유 없으면 거절, 사유 있으면 PR · 병합 · `verification: forced` 기록. 대표 문서 3건(보고서) 경로는 그대로 12/12 |
 | 원본값 대조 · 재검사 | ✅ | `tests/e2e_inspect.py` — 불일치 1건 탐지, 수정본 0건 |
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
@@ -333,6 +358,7 @@ kosoe-office/
 python tests/smoke_engines.py     # 스킬 저장소 동기화 → 상속 해석 → 한글 · PPT · 웹 생성
 python tests/e2e_skillgen.py      # 스킬 빌더 끝까지 (앱 실행 중, seed 자료 필요)
 python tests/e2e_inspect.py       # 검수 · 재검사
+python tests/e2e_fillform.py      # 목적별 한글 스킬(계약서): 칸 초안 → 수정 → 생성 → 검수 (앱 실행 중)
 python tests/e2e_style.py         # 문서 기준 문체 · 고정 문구의 칸 (앱 없이). --app 을 붙이면 계약서 예시로 분석 → 검증
 python tests/e2e_provider.py nvidia       # AI를 바꿔 추천 → 초안 → 수정 → 세 형식 생성 (끝나면 되돌림). openrouter · --model 도 가능
 ```

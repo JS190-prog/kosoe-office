@@ -485,7 +485,31 @@ def route(text, templates, ctx=None):
 
 
 # ───────────── 2. 설계도 작성 ─────────────
+def _fill_blueprint(form, request_text, files, ctx=None):
+    """서식 채우기형 양식(계약서 등): 조항은 서식에 있으므로 칸에 넣을 값만 요청·자료에서 찾는다."""
+    import fillform
+
+    def rule():
+        return fillform.to_blueprint(form, {}, {})
+
+    def llm(M):
+        sys = ('너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 모양이 정해진 서식의 칸에 넣을 값을 요청과 첨부 자료에서 찾아 적는다.\n'
+               '- 조항·본문 문장은 서식에 들어 있으므로 쓰지 않는다. 칸의 값만 적는다.\n'
+               '- 요청·자료에 없는 값은 빈 문자열로 둔다. 금액·날짜·사람 이름·주소를 짐작하거나 지어내지 않는다.\n'
+               '- [고객사명1] 같은 대괄호 토큰은 가려 둔 값이다. 그대로 옮겨 쓴다.\n'
+               '- 금액은 자료의 숫자를 표의 단위에 맞춰 쉼표와 함께 적는다(예: 단위가 천원이면 2,400만원 → 24,000). 단위 환산이 확실하지 않으면 비워 둔다.\n'
+               '- 날짜는 칸 설명의 형식을 따른다.')
+        user = (f"서식: {form.get('name')} — {form.get('purpose', '')}\n\n채울 칸:\n{fillform.prompt_spec(form)}\n\n"
+                f"요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
+                '출력 형식: {"fields": {칸 key: 값}, "rows": {표 key: [{열 이름: 값}]}}')
+        out, ms = call_json(sys, user, 2000)
+        return fillform.to_blueprint(form, out.get('fields') or {}, out.get('rows') or {}), ms
+    return _try(ctx, llm, rule)
+
+
 def blueprint(template, request_text, files, ctx=None):
+    if template.get('fill'):
+        return _fill_blueprint(template['fill'], request_text, files, ctx)
     outline = json.loads(template['outline'])
     tables = [t for f in files or [] for t in json.loads(f.get('tables') or '[]')]
     fixed = json.loads(template.get('fixed') or '[]')
@@ -520,7 +544,7 @@ def blueprint(template, request_text, files, ctx=None):
 
 
 # ───────────── 3. 채팅으로 고치기 ─────────────
-def edit(bp, instruction, files, ctx=None, style=None):
+def edit(bp, instruction, files, ctx=None, style=None, extra=''):
     def rule():
         b = json.loads(json.dumps(bp))
         secs = b['sections']
@@ -548,7 +572,7 @@ def edit(bp, instruction, files, ctx=None, style=None):
         return {'reply': f"**{tgt['heading']}**에 지시를 메모로 넣었습니다. (규칙 기반 보조 모드 — AI가 연결되면 문장으로 반영합니다)", 'blueprint': b}
 
     def llm(M):
-        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{writing_rules(style)}'
+        sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{writing_rules(style)}' + (f'\n{extra}' if extra else '')
         user = (f'현재 설계도:\n{M(json.dumps(bp, ensure_ascii=False))}\n\n지시: {M(instruction)}\n\n{_attach_text(files, M)}\n\n'
                 f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA}}}')
         out, ms = call_json(sys, user, 3500)

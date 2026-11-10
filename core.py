@@ -51,6 +51,7 @@ def load_env():
         'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),
         'skills_repo': get('KOSOE_SKILLS_REPO', 'humanist96/kosoe-office-skills'),
         'skills_offline': get('KOSOE_SKILLS_OFFLINE', '') == '1',
+        'corp_local': get('KOSOE_CORP_LOCAL', ''),                 # 원격에 올리기 전의 전사 스킬을 이 PC 저장소에서 쓰기: id=경로;id=경로
         'ppt_engine': get('KOSOE_PPT_ENGINE', 'ppt-master'),      # ppt-master | lite
         'port': int(os.environ.get('PORT') or get('KOSOE_PORT', '8810')),
     }

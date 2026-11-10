@@ -97,6 +97,25 @@ def make_hwp(bp, template, people, path, jd):
     return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
 
 
+def make_hwp_fill(bp, info, path, jd):
+    """서식 채우기형 한글 스킬(목적별: 계약서·공문 등)로 만든다 — 설계도의 칸 값을 서식(.hwp)에 넣는다.
+    info = 양식의 skill 정보({'corp': 전사 스킬 id, 'fill': form.yaml})."""
+    import fillform
+    cid, form = info['corp'], info['fill']
+    values = fillform.to_values(bp, form)
+    vp = os.path.join(jd, 'values.json')
+    json.dump(values, open(vp, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    # 서식은 매번 git 객체에서 새로 꺼낸다(사내 보호 도구가 캐시 파일을 암호화해도 영향 없음)
+    tpl = corp.fresh_copy(cid, [form['template']], os.path.join(jd, 'templates'))[0]
+    root = corp.path(cid)
+    cp = os.pathsep.join(os.path.join(root, *p.split('/')) for p in (form.get('lib') or 'lib/hwplib-1.1.9.jar', form['jar']))
+    r = subprocess.run(['java', '-Dfile.encoding=UTF-8', '-cp', cp, 'FillRenderer', tpl, vp, path], capture_output=True, timeout=60)
+    out = r.stdout.decode('utf-8', 'replace') + r.stderr.decode('utf-8', 'replace')
+    if r.returncode != 0 or not os.path.exists(path):
+        raise RuntimeError('한글 서식 채우기 실패: ' + out.strip()[-300:])
+    return [l[5:].strip() for l in out.splitlines() if l.startswith('WARN')]
+
+
 def hwp_text(path):
     """한글 파일의 문단 텍스트를 뽑는다(Inspect 출력의 따옴표 안)."""
     code, out = _java('Inspect', path)
@@ -506,6 +525,11 @@ def engine_of(fmt):
     return {'corp': cid, 'name': name, 'sha': (c.get('sha') or '')[:7]}
 
 
+def fill_engine(cid):
+    c = corp.info(cid) or {}
+    return {'corp': cid, 'name': f'{cid} · 서식 채우기', 'sha': (c.get('sha') or '')[:7]}
+
+
 def make(fmt, bp, template, people, doc_id, ver):
     t0 = time.time()
     ext = {'hwp': 'hwp', 'ppt': 'pptx', 'web': 'html'}[fmt]
@@ -513,7 +537,13 @@ def make(fmt, bp, template, people, doc_id, ver):
     jd = job_dir(doc_id, ver)
     warns = []
     engine = engine_of(fmt)
-    if fmt == 'hwp':
+    info = template.get('skill') or {}
+    if isinstance(info, str):
+        info = json.loads(info or '{}') or {}
+    if fmt == 'hwp' and info.get('fill'):          # 목적별 한글 스킬(서식 채우기형)
+        engine = fill_engine(info['corp'])
+        warns = make_hwp_fill(bp, info, path, jd)
+    elif fmt == 'hwp':
         warns = make_hwp(bp, template, people, path, jd)
     elif fmt == 'ppt':
         try:

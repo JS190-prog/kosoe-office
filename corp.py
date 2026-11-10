@@ -9,7 +9,7 @@ import threading
 
 import yaml
 
-from core import HOME
+from core import CFG, HOME
 from gitutil import GitError, git, git_remote
 
 CORP = os.path.join(HOME, 'corp')
@@ -40,10 +40,50 @@ ENTRY = {
 def set_lock(data, sha):
     with _lock:
         _lockfile.update(data=data, sha=sha)
+        _forms.clear()
+
+
+def _local():
+    """아직 원격에 올리지 않은 전사 스킬을 이 PC의 Git 저장소에서 바로 쓴다(스킬 개발·시험용).
+    .env:  KOSOE_CORP_LOCAL=koscom-hwp-pb-contract=C:\\path\\to\\repo;다른-id=경로   → 그 저장소의 HEAD 커밋으로 고정."""
+    out = {}
+    for part in (os.environ.get('KOSOE_CORP_LOCAL') or CFG.get('corp_local') or '').split(';'):
+        if '=' not in part:
+            continue
+        cid, p = (x.strip() for x in part.split('=', 1))
+        if not os.path.isdir(os.path.join(p, '.git')):
+            continue
+        try:
+            sha = git('rev-parse', 'HEAD', cwd=p).strip()
+        except Exception:
+            continue
+        out[cid] = {'repo': p, 'sha': sha, 'local': True, 'kind': 'hwp-fill' if os.path.exists(os.path.join(p, 'form.yaml')) else ''}
+    return out
 
 
 def lock():
-    return _lockfile['data'] or {'corp_skills': {}, 'locked_keys': []}
+    data = _lockfile['data'] or {'corp_skills': {}, 'locked_keys': []}
+    loc = _local()
+    if not loc:
+        return data
+    return {**data, 'corp_skills': {**(data.get('corp_skills') or {}), **loc}}
+
+
+_forms = {}
+
+
+def fill_skills():
+    """서식 채우기형 한글 스킬(kind: hwp-fill) 목록 → [(id, 잠금 항목)]. 목적마다 스킬이 따로 있다(계약서·공문 등)."""
+    return [(cid, c) for cid, c in lock()['corp_skills'].items() if c.get('kind') == 'hwp-fill']
+
+
+def form_of(cid):
+    """서식 채우기형 스킬의 form.yaml(칸 정의). 고정된 커밋에서 읽어 커밋마다 한 번만 풀어 둔다."""
+    c = info(cid)
+    key = (cid, c['sha'])
+    if key not in _forms:
+        _forms[key] = yaml.safe_load(read_text(cid, 'form.yaml')) or {}
+    return _forms[key]
 
 
 def info(cid):
@@ -65,7 +105,7 @@ def ensure(cid):
         mark = os.path.join(d, '.git', 'kosoe-ok')
         if not os.path.exists(mark):
             os.makedirs(os.path.dirname(d), exist_ok=True)
-            url = f"https://github.com/{c['repo']}.git"
+            url = c['repo'] if c.get('local') else f"https://github.com/{c['repo']}.git"
             if os.path.isdir(d):
                 import shutil
                 shutil.rmtree(d, ignore_errors=True)
@@ -128,7 +168,8 @@ def status():
     out = []
     for cid, c in lock()['corp_skills'].items():
         d = os.path.join(CORP, cid, c['sha'][:12])
-        out.append({'id': cid, 'repo': c['repo'], 'sha': c['sha'], 'short': c['sha'][:7], 'cached': os.path.exists(os.path.join(d, '.git', 'kosoe-ok'))})
+        out.append({'id': cid, 'repo': c['repo'] + (' (이 PC의 저장소 — 아직 원격에 없음)' if c.get('local') else ''), 'sha': c['sha'], 'short': c['sha'][:7],
+                    'cached': os.path.exists(os.path.join(d, '.git', 'kosoe-ok')), 'kind': c.get('kind', '')})
     return out
 
 

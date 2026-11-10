@@ -23,6 +23,7 @@ import core
 import corp
 import engines
 import extract
+import fillform
 import llm
 import skills
 from core import CFG, DATA, FMT, GRADE, ROLE, db, now, row, rows
@@ -175,7 +176,7 @@ def tpl_view(t, u):
         up = list(reversed((info.get('chain') or [])[:-1])) + ['전사']
         o['skill'] = f"{info['id']}@{info.get('version', '')} ← " + ' ← '.join(up)
     else:
-        e = engines.engine_of(t['fmt'])
+        e = engines.fill_engine(info['corp']) if info.get('fill') else engines.engine_of(t['fmt'])
         o['skill'] = f"전사 {e['name']}@{e['sha']}"
     o['usable'] = core.can_use_template(t, u, g.net)
     o['blocked'] = '대외비 양식은 인터넷망에서 쓸 수 없습니다' if g.net == 'internet' and t['grade'] == 'c' else ''
@@ -426,7 +427,17 @@ def _uploads(ids):
 def compose_view(c):
     return {'id': c['id'], 'template_id': c['template_id'], 'fmt': c['fmt'], 'grade': c['grade'], 'title': c['title'],
             'blueprint': J(c['blueprint'], {}), 'chat': J(c['chat'], []), 'files': J(c['files'], []), 'doc_id': c['doc_id'],
-            'llm': J(c['llm'], {})}
+            'llm': J(c['llm'], {}), 'fill': _fill_of(c['template_id'])}
+
+
+def _fill_of(template_id):
+    """서식 채우기형 양식이면 화면에 보일 요약(스킬 id · 형식 제한), 아니면 None."""
+    t = row(g.con, 'select skill from templates where id=?', template_id)
+    info = (J(t['skill'], {}) or {}) if t else {}
+    if not info.get('fill'):
+        return None
+    e = engines.fill_engine(info['corp'])
+    return {'corp': info['corp'], 'sha': e['sha'], 'name': info['fill'].get('name', ''), 'fmts': ['hwp']}
 
 
 def _tpl_for_llm(t):
@@ -442,7 +453,7 @@ def _tpl_for_llm(t):
     req = (info.get('checks') or {}).get('required') or []
     if req:
         rules.append('반드시 넣을 문구(글자 그대로): ' + ' / '.join(req))
-    return {**t, 'rules': '\n'.join(r for r in rules if r), 'style': info.get('style')}
+    return {**t, 'rules': '\n'.join(r for r in rules if r), 'style': info.get('style'), 'fill': info.get('fill')}
 
 
 def _style_of(t):
@@ -504,7 +515,13 @@ def compose_chat(cid):
     if not msg:
         return err('내용을 입력해 주세요')
     files = _uploads(b.get('upload_ids'))
-    out, meta = llm.edit(J(c['blueprint']), msg, files, ai_ctx(), _style_of(row(g.con, 'select * from templates where id=?', c['template_id']))[0])
+    t = row(g.con, 'select * from templates where id=?', c['template_id'])
+    fill = (J(t['skill'], {}) or {}).get('fill') if t else None
+    out, meta = llm.edit(J(c['blueprint']), msg, files, ai_ctx(), _style_of(t)[0],
+                         '이 문서는 모양이 정해진 서식의 칸을 채우는 문서다. 장 제목 · 항목의 label · 표의 열 이름과 순서는 바꾸지 않는다. '
+                         '값(text, 표의 칸)만 지시대로 바꾼다. 요청·자료에 없는 값은 지어내지 않는다.' if fill else '')
+    if fill:                                    # 칸 이름·표 열이 서식과 같게 되돌린다(값만 유지)
+        out['blueprint'] = fillform.normalize(out['blueprint'], fill)
     chat = J(c['chat'], [])
     chat += [{'who': 'me', 'text': msg, 't': now(), 'files': [f['name'] for f in files]}, {'who': 'ai', 'text': out['reply'], 't': now(), 'meta': meta}]
     bp = out['blueprint']
@@ -521,6 +538,10 @@ def compose_put(cid):
     c = _my_compose(cid)
     b = request.json or {}
     bp = llm._clean_bp(b.get('blueprint') or J(c['blueprint']), [])
+    t = row(g.con, 'select skill from templates where id=?', c['template_id'])
+    fill = (J(t['skill'], {}) or {}).get('fill') if t else None
+    if fill:
+        bp = fillform.normalize(bp, fill)
     g.con.execute('update compose set blueprint=?, title=?, fmt=?, grade=? where id=?',
                   (json.dumps(bp, ensure_ascii=False), bp['title'], b.get('fmt') or c['fmt'], b.get('grade') or c['grade'], cid))
     return ok(compose=compose_view(row(g.con, 'select * from compose where id=?', cid)))
@@ -546,6 +567,8 @@ def _render(doc_id, ver, fmt, bp, t, u, meta, source=''):
     info = J(t['skill'], {}) or {}
     if info.get('id'):
         cks += checks.skill_checks(bp, {**info, 'fixed': J(t['fixed'], [])})
+    if info.get('fill'):                        # 서식 채우기형: 필수 칸 · 칸 형식 · 표
+        cks = [c for c in cks if c['id'] not in ('empty', 'todo')] + fillform.check(bp, info['fill'])
     if source and source.strip():
         cc = checks.crosscheck(source, [{'name': FMT[fmt], 'text': _file_text(path, fmt)}])
         bad = [i for i in cc['items'] if i['kind'] in ('mismatch', 'unknown')]
@@ -573,6 +596,8 @@ def compose_generate(cid):
         return err('양식이 저장소에서 사라졌습니다. 양식을 다시 골라 주세요.', 404)
     bp = J(c['blueprint'])
     meta = J(c['llm'], {})
+    if (J(t['skill'], {}) or {}).get('fill'):       # 서식 채우기형(계약서 등)은 그 서식의 한글 파일만 만든다
+        fmts = ['hwp']
     if c['doc_id']:
         d = row(g.con, 'select * from docs where id=?', c['doc_id'])
         ver = d['ver'] + 1
