@@ -684,7 +684,10 @@ def _clean_bp(bp, outline):
         for it in s.get('items') or []:
             if isinstance(it, str):
                 it = {'label': '', 'text': it}
-            o = {'label': _plain(it.get('label'))[:12], 'text': _plain(it.get('text')),
+            label, text = _plain(it.get('label')), _plain(it.get('text'))
+            if len(label) > 12:                     # 라벨 칸보다 긴 이름은 자르지 않고 글 앞에(「하자보증기간 및 무상보증기간 : …」)
+                label, text = '', f'{label} : {text}'
+            o = {'label': label, 'text': text,
                  'children': [{'text': _plain(c.get('text') if isinstance(c, dict) else c)} for c in (it.get('children') or [])][:3]}
             tb = _clean_table(it.get('table'))      # 기안문: 항목 바로 아래 표(한 장에 표가 여럿 — 계약내역 · 검사자)
             if tb:
@@ -1062,6 +1065,10 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
         {'label': '계정과목', 'text': '기계장치', 'table': {'cols': [], 'rows': []}}]}]}, [])
     assert c['request'] == req and _clean_bp({'title': 'T', 'request': req * 2, 'sections': []}, [])['request'] == req * 2   # 제목(80자)과 달리 자르지 않음
     assert c['sections'][0]['items'][0]['table'] == {'cols': ['부서', '담당자'], 'rows': [['A', 'B']]} and 'table' not in c['sections'][0]['items'][1]
+    c = _clean_bp({'title': 'T', 'sections': [{'heading': '계약체결', 'items': [{'label': '하자보증기간 및 무상보증기간', 'text': '검사 완료일로부터 1년'},
+                                                                         {'label': '계약명', 'text': 'A 계약'}]}]}, [])
+    assert [(x['label'], x['text']) for x in c['sections'][0]['items']] == \
+        [('', '하자보증기간 및 무상보증기간 : 검사 완료일로부터 1년'), ('계약명', 'A 계약')]     # 긴 라벨은 자르지 않고 글 앞에
     # 기안문 마무리: 내용 없는 장은 빼고(장 제목 줄만 있는 장은 남김), 업로드 파일은 첨부 목록에 빠짐없이(이미 있으면 그대로)
     it = {'label': '', 'text': 'x', 'children': []}
     d = draft_post({'title': 'T', 'attachments': ['[기획2026-1] 기획2026-1_계획 (2026. 1. 2.) 1부'], 'sections': [
