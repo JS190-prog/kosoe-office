@@ -56,6 +56,22 @@ def ensure(force=False, max_age=60):
         return STATE
 
 
+_vis = {'v': None, 't': 0}
+
+
+def visibility():
+    """스킬 저장소가 공개인지 — 'public' | 'private' | ''(알 수 없음). 등록 화면에서 무엇이 어디에 올라가는지 알릴 때 쓴다(10분에 한 번 조회)."""
+    if _vis['v'] is None or time.time() - _vis['t'] > 600:
+        v = ''
+        if have_gh() and not CFG['skills_offline']:
+            try:
+                v = gh('repo', 'view', SLUG, '--json', 'visibility', '-q', '.visibility', timeout=20, check=False).strip().lower()
+            except Exception:
+                v = ''
+        _vis.update(v=v if v in ('public', 'private', 'internal') else '', t=time.time())
+    return _vis['v']
+
+
 # ───────────── 읽기 ─────────────
 def _load(p):
     d = yaml.safe_load(open(p, encoding='utf-8')) or {}

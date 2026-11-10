@@ -968,12 +968,22 @@ def _open_skill_request(kind, s, files, u, report=None, note=''):
     return row(g.con, 'select * from requests where id=?', rid)
 
 
+def _public_detail(c, rep):
+    """PR 본문·스킬 파일에 적을 기준 설명. 숫자 기준은 대표 문서의 값이 드러나지 않게 건수로 적는다."""
+    if c.get('id') != 'numbers':
+        return c.get('detail', '')
+    lost = sum(len(t['with']['lost']) for t in rep.get('tasks') or [])
+    new = sum(len(t['with']['new']) for t in rep.get('tasks') or [])
+    return f'빠진 숫자 {lost}건 · 새 숫자 {new}건' if lost or new else ''
+
+
 def _report_md(rep):
+    """PR 본문에 넣는 검증 리포트(저장소에 올라간다 — 대표 문서의 글·값은 넣지 않는다)."""
     if not rep:
         return ''
     lines = ['| 기준 | 결과 | 내용 |', '|---|---|---|']
     for c in rep.get('criteria', []):
-        lines.append(f"| {c['name']} | {'✅' if c['pass'] else '❌'} | {c.get('detail', '')} |")
+        lines.append(f"| {c['name']} | {'✅' if c['pass'] else '❌'} | {_public_detail(c, rep)} |")
     lines.append(f"\n스킬 사용 {rep.get('with_score', 0)}점 / 미사용 {rep.get('without_score', 0)}점")
     st = rep.get('style') or {}
     if st and not st.get('default'):
@@ -1294,7 +1304,7 @@ def skillgen_evaluate(jid):
     report = {'criteria': crit, 'tasks': tasks, 'with_score': wsc, 'without_score': osc, 'full': full, 'errors': errs,
               'auto_pass': all(c['pass'] for c in crit if c['id'] != 'human') and not errs, 'style': analysis.get('style'),
               # 강제 등록: 품질 기준 미통과는 사유를 남기고 넘길 수 있지만, 스킬 파일 검사 오류와 보안(개인정보)은 넘길 수 없다
-              'can_force': not errs and not pii}
+              'can_force': not errs and not pii, 'upload': _upload_notice(draft)}
     g.con.execute("update skill_jobs set skill=?, report=?, stage='evaluated', updated=? where id=?",
                   (json.dumps(draft, ensure_ascii=False), json.dumps(report, ensure_ascii=False), now(), jid))
     log(g.u['name'], f"스킬 빌더 ④ 검증 — {draft['id']} · 사용 {wsc}/{full} vs 미사용 {osc}/{full} · 자동 기준 {'통과' if report['auto_pass'] else '미통과'}")
@@ -1316,7 +1326,30 @@ def _skill_md(d, analysis):
             f"# {d['name']}\n\n- 상속: {', '.join(d['extends'])}. 전사 지침은 그대로 따르고 아래만 덧붙인다.\n"
             f"- 기반 양식: {base.get('name', '-')} (유사도 {base.get('similarity', '-')})\n- 형식: {FMT[form['fmt']]}\n{style}"
             f"- 구성(이 순서와 제목 그대로): {' → '.join(form['outline'])}\n\n## 고정 문구(글자 그대로)\n{blocks}\n\n## 작성 규칙\n{rules}\n\n"
-            f"## 검증\n`evals/`의 과제(메모 → 기대 구성·고정 문구·숫자)로 채점한다. 원문은 저장하지 않았다.\n{forced}")
+            f"## 검증\n대표 문서에서 만든 과제(메모 → 기대 구성·고정 문구·숫자)로 스킬 사용/미사용을 채점했다. `evals/`에는 기대 구성과 채점 결과만 있다. "
+            f"대표 문서 파일과 과제 메모(대표 문서에서 뽑은 줄)는 저장소에 올리지 않았다.\n{forced}")
+
+
+def _skill_files(draft, report, analysis):
+    """등록할 때 스킬 저장소에 올리는 파일 묶음.
+    대표 문서의 원문은 올리지 않는다: 검증 과제 메모(대표 문서에서 뽑은 줄)는 이 PC의 작업 기록에만 두고,
+    저장소에는 기대 구성·고정 문구와 채점 결과(빠진 숫자·새 숫자는 값이 아니라 건수)만 올린다."""
+    path = skills.skill_dir(draft)
+    files = {f'{path}/kosoe-skill.yaml': skills.dump_skill(draft), f'{path}/SKILL.md': _skill_md(draft, analysis)}
+    for i, t in enumerate(report.get('tasks') or [], 1):
+        files[f'{path}/evals/case-{i}/case.yaml'] = yaml.safe_dump(
+            {'memo': {'kept': 'local', 'lines': len([l for l in (t.get('memo') or '').splitlines() if l.strip()]),
+                      'note': '과제 메모(대표 문서에서 뽑은 줄)는 저장소에 올리지 않는다. 등록한 PC의 작업 기록에만 있다.'},
+             'expect': {'outline': draft['forms'][0]['outline'], 'fixed': [x['text'] for x in draft.get('blocks') or []]},
+             'score': {'with': checks.public_score(t['with']), 'without': checks.public_score(t['without'])}}, allow_unicode=True, sort_keys=False)
+    return files
+
+
+def _upload_notice(draft):
+    """등록하면 저장소에 무엇이 올라가는지 — 화면에 미리 보여 준다(저장소가 공개인지, 스킬 글에 회사 이름으로 보이는 글이 있는지)."""
+    return {'visibility': skills.visibility(), 'repo': skills.SLUG, 'names': checks.company_names(draft),
+            'files': ['kosoe-skill.yaml (구성 · 고정 문구 · 규칙)', 'SKILL.md', 'evals/case-N/case.yaml (기대 구성 · 채점 결과)'],
+            'not_uploaded': '대표 문서 파일과 검증 과제 메모(대표 문서에서 뽑은 줄)'}
 
 
 @app.post('/api/skillgen/<jid>/submit')
@@ -1351,19 +1384,15 @@ def skillgen_submit(jid):
             return err('강제 등록 사유를 5자 이상 적어 주세요 (PR과 스킬 파일에 남습니다)')
         who = f"{g.u['name']} {g.u['title']}".strip()
         names = [c['name'] for c in failed]
-        report['forced'] = {'by': who, 'reason': reason[:200], 'failed': [c['name'] + (f" — {c['detail']}" if c.get('detail') else '') for c in failed], 't': now()}
+        report['forced'] = {'by': who, 'reason': reason[:200], 't': now(),
+                            'failed': [c['name'] + (f' — {d}' if d else '') for c in failed for d in [_public_detail(c, report)]]}
         draft['verification'] = {'status': 'forced', 'failed': names, 'reason': reason[:200], 'by': who, 'date': core.today_kr()}
         errs = skills.validate(draft, skills.all_skills())
         if errs:                                # 사유에 개인정보가 들어간 경우 등
             return err('검사 실패: ' + '; '.join(errs))
     analysis = J(j['analysis'], {})
     path = skills.skill_dir(draft)
-    files = {f'{path}/kosoe-skill.yaml': skills.dump_skill(draft), f'{path}/SKILL.md': _skill_md(draft, analysis)}
-    for i, t in enumerate(report.get('tasks') or [], 1):
-        files[f'{path}/evals/case-{i}/prompt.md'] = t['memo'] + '\n'
-        files[f'{path}/evals/case-{i}/case.yaml'] = yaml.safe_dump(
-            {'expect': {'outline': draft['forms'][0]['outline'], 'fixed': [x['text'] for x in draft.get('blocks') or []]},
-             'score': {'with': t['with'], 'without': t['without']}}, allow_unicode=True, sort_keys=False)
+    files = _skill_files(draft, report, analysis)
     r = _open_skill_request('new', {**draft, '_path': path}, files, g.u, report=report, note=j['request'] or '')
     g.con.execute("update skill_jobs set stage='submitted', skill=?, report=?, request_id=?, updated=? where id=?",
                   (json.dumps(draft, ensure_ascii=False), json.dumps(report, ensure_ascii=False), r['id'], now(), jid))
