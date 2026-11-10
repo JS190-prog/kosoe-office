@@ -153,20 +153,22 @@ Python 패키지, Java, Git, GitHub 로그인, 스킬 저장소, 전사 공용 �
 - 그 스킬로 만든 문서를 열면 「새 기준으로 다시 만들기」 알림이 뜹니다.
 - 스킬 상세의 버전 목록에서 **이 버전으로 복구 요청**을 누르면 이전 내용으로 되돌리는 PR이 열립니다.
 
-### 5. AI 바꾸기 (Claude Code CLI ↔ OpenRouter)
+### 5. AI 바꾸기 (Claude Code CLI ↔ NVIDIA API · OpenRouter)
 
 화면 위쪽의 **🤖 AI 표시**를 누르면 AI를 고르는 창이 열립니다. 고른 값은 이 PC에 저장되고 다음 요청부터 적용됩니다.
 
 | 선택 | 쓰는 곳 | 준비 |
 |---|---|---|
 | Claude Code CLI (구독) | 기본값 | `python kosoe.py login` |
-| OpenRouter API | 사내 GPU에 올릴 오픈 모델(DeepSeek 등)로도 같은 결과가 나오는지 보여 줄 때 | `.env`에 `KOSOE_OPENROUTER_API_KEY` |
+| NVIDIA API (build.nvidia.com) | 사내 GPU에 올릴 오픈 모델(DeepSeek 등)로도 같은 결과가 나오는지 **무료 체험 엔드포인트**로 보여 줄 때 | `.env`에 `KOSOE_NVIDIA_API_KEY` |
+| OpenRouter API | 같은 목적. 유료 모델과 일부 무료 모델 | `.env`에 `KOSOE_OPENROUTER_API_KEY` |
 | 규칙 기반 | AI 없이 동작 확인 | 없음 |
 
-- 모델은 창 안의 목록에서 고릅니다. 목록은 `.env`의 `KOSOE_OPENROUTER_MODELS`로 바꿉니다.
-- `deepseek/deepseek-v4.1-flash`는 **유료**입니다(입력 100만 토큰당 약 $0.05, 출력 약 $0.57 — 문서 1건을 끝까지 만드는 데 1~2센트). 이름이 `:free`로 끝나는 모델만 무료이고, 하루 요청 수 제한이 있으며 붐빌 때는 429로 거절되기도 합니다(그러면 규칙 기반으로 넘어갑니다). 무료 모델은 DeepSeek보다 3~4배 느렸습니다. 창 아래에 이번 실행의 호출 수와 비용이 보입니다.
-- OpenRouter를 고르면 요청 내용이 **외부 서비스로 나갑니다.** 그래서 망 모드와 상관없이 항상 가림 처리를 하고 보냅니다. 가상 자료만 쓰세요.
-- **연결 시험**을 누르면 고른 모델을 한 번 불러 응답 시간을 보여 줍니다.
+- 모델은 창 안의 목록에서 고릅니다. 목록은 `.env`의 `KOSOE_NVIDIA_MODELS` · `KOSOE_OPENROUTER_MODELS`로 바꿉니다.
+- **NVIDIA API**는 무료이지만 체험 약관이 붙습니다: 시험 · 평가용만(운영 사용 금지), 기밀 · 개인정보 입력 금지, 요청 수 제한, 예고 없이 중단될 수 있음. 인기 모델은 대기열이 길어 느립니다 — 2026-11-10 시험에서 `deepseek-ai/deepseek-v4.1-flash`는 응답이 시작될 때까지 70~85초를 기다렸고, 같은 엔드포인트의 `nvidia/nemotron-3-ultra-550b-a55b`는 1초 안에 시작했습니다.
+- **OpenRouter**의 `deepseek/deepseek-v4.1-flash`는 **유료**입니다(입력 100만 토큰당 약 $0.05, 출력 약 $0.57 — 문서 1건을 끝까지 만드는 데 1~2센트). 이름이 `:free`로 끝나는 모델만 무료이고, 하루 요청 수 제한이 있으며 붐빌 때는 429로 거절되기도 합니다(그러면 규칙 기반으로 넘어갑니다). 창 아래에 이번 실행의 호출 수와 비용이 보입니다.
+- NVIDIA API나 OpenRouter를 고르면 요청 내용이 **외부 서비스로 나갑니다.** 그래서 망 모드와 상관없이 항상 가림 처리를 하고 보냅니다. 가상 자료만 쓰세요.
+- **연결 시험**을 누르면 고른 모델을 한 번 불러 응답 시간을 보여 줍니다. 시연 직전에 눌러 그날의 속도를 확인하세요.
 
 ### 명령
 
@@ -260,7 +262,7 @@ flowchart TB
 
 ### AI 어댑터
 
-AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude Code 구독 CLI이고, 화면에서 OpenRouter(DeepSeek 등) · 규칙 기반으로, 설정으로 Claude API · OpenAI 호환(사내 모델)으로 바꿉니다. 제공자가 바뀌어도 화면 · 스킬 · 엔진 · 검수는 그대로입니다. 모델이 하는 일은 라우팅 · 설계도 작성과 수정 · 문서 분석 · 문장 줄이기이며, **검수와 채점은 코드가 파일에서 읽은 값으로** 합니다.
+AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude Code 구독 CLI이고, 화면에서 NVIDIA API · OpenRouter(DeepSeek 등) · 규칙 기반으로, 설정으로 Claude API · OpenAI 호환(사내 모델)으로 바꿉니다. 제공자가 바뀌어도 화면 · 스킬 · 엔진 · 검수는 그대로입니다. 모델이 하는 일은 라우팅 · 설계도 작성과 수정 · 문서 분석 · 문장 줄이기이며, **검수와 채점은 코드가 파일에서 읽은 값으로** 합니다.
 
 ## 설정
 
@@ -268,7 +270,10 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 
 | 변수 | 기본값 | 뜻 |
 |---|---|---|
-| `KOSOE_AI` | `claude_cli` | 처음 켤 때의 AI. `claude_cli` · `openrouter` · `anthropic` · `openai_compat` · `rule`. 화면에서 바꾸면 그 값이 우선합니다 |
+| `KOSOE_AI` | `claude_cli` | 처음 켤 때의 AI. `claude_cli` · `nvidia` · `openrouter` · `anthropic` · `openai_compat` · `rule`. 화면에서 바꾸면 그 값이 우선합니다 |
+| `KOSOE_NVIDIA_API_KEY` | — | build.nvidia.com 키(`nvapi-…`). `.env`에만 적습니다(Git에 올라가지 않음) |
+| `KOSOE_NVIDIA_MODELS` | `deepseek-ai/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b` | 화면에서 고를 NVIDIA 모델 목록. 첫 번째가 기본 |
+| `KOSOE_NVIDIA_THINKING` | `off` | 추론. 켜면(`on`) 추론이 답 토큰을 다 써서 빈 응답이 나올 수 있습니다 |
 | `KOSOE_OPENROUTER_API_KEY` | — | OpenRouter 키. `.env`에만 적습니다(Git에 올라가지 않음) |
 | `KOSOE_OPENROUTER_MODELS` | DeepSeek v4.1 Flash + 무료 모델 3개 (`.env.example` 참고) | 화면에서 고를 모델 목록. 첫 번째가 기본. 무료 모델 목록은 자주 바뀝니다 |
 | `KOSOE_OPENROUTER_REASONING` | `low` | 추론 강도. `off`(가장 빠름) · `low` · `medium` · `high` · `default` |
@@ -288,7 +293,7 @@ kosoe-office/
 ├─ kosoe.py            실행 진입점 (run · doctor · login · sync · seed · reset-demo)
 ├─ app.py              Flask API — 작성 · 생성 · 검수 · 스킬 빌더 · 승인 · 시연 도우미
 ├─ core.py             설정(.env) · SQLite · 가상 조직 · 권한
-├─ llm.py              AI 어댑터(Claude Code CLI · OpenRouter · 사내 모델) · 마스킹 · 규칙 기반 대체
+├─ llm.py              AI 어댑터(Claude Code CLI · NVIDIA API · OpenRouter · 사내 모델) · 마스킹 · 규칙 기반 대체
 ├─ corp.py             전사 공용 스킬을 잠금 커밋으로 받아 두기(부분 복제)
 ├─ skills.py           스킬 저장소 — 상속 해석 · 검사 · 브랜치/PR/병합/태그 · 복구
 ├─ engines.py          설계도 → 한글 · PPT · 웹, 보고 문법 검수 · 자동 수정
@@ -315,6 +320,7 @@ kosoe-office/
 | 원본값 대조 · 재검사 | ✅ | `tests/e2e_inspect.py` — 불일치 1건 탐지, 수정본 0건 |
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
 | AI 전환 (OpenRouter) | ✅ | `tests/e2e_provider.py` — DeepSeek v4.1 Flash(유료): 추천 11초 · 초안 10초 · 수정 11초, 11회 호출 약 $0.02. Nemotron 3 Ultra(무료): 초안 36초 · 수정 40초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지. 스킬 빌더 검증도 DeepSeek로 12/12 통과 |
+| AI 전환 (NVIDIA API, 무료 체험) | ✅ 느림 주의 | 같은 시험(2026-11-10). Nemotron 3 Ultra: 추천 4초 · 초안 12초 · 수정 13초, 검수 전 항목 통과. DeepSeek v4.1 Flash: 결과는 같게 나오지만 대기열 때문에 연결 시험 91초 · 추천 240초 · 초안 126초 · 수정 121초. 둘 다 원본 수치 · 가림 복원 · 고정 문구 유지, 비용 $0. 스킬 빌더는 NVIDIA로 시험하지 않았습니다 |
 | macOS | ⚠️ | 설치 스크립트 · 경로 · 미리보기를 대응했지만 **실제 맥에서는 아직 실행해 보지 못했습니다** |
 | GitHub Actions 검사 | ⏸ | 워크플로 파일은 스킬 저장소 `tools/ci/`에 보관. 켜려면 토큰에 `workflow` 권한 필요 |
 
@@ -322,7 +328,7 @@ kosoe-office/
 python tests/smoke_engines.py     # 스킬 저장소 동기화 → 상속 해석 → 한글 · PPT · 웹 생성
 python tests/e2e_skillgen.py      # 스킬 빌더 끝까지 (앱 실행 중, seed 자료 필요)
 python tests/e2e_inspect.py       # 검수 · 재검사
-python tests/e2e_provider.py openrouter   # AI를 바꿔 추천 → 초안 → 수정 → 세 형식 생성 (끝나면 되돌림)
+python tests/e2e_provider.py nvidia       # AI를 바꿔 추천 → 초안 → 수정 → 세 형식 생성 (끝나면 되돌림). openrouter · --model 도 가능
 ```
 
 ## 문제 해결
@@ -336,7 +342,8 @@ python tests/e2e_provider.py openrouter   # AI를 바꿔 추천 → 초안 → �
 | 첫 문서 생성이 매우 느림 | 백신의 첫 검사 때문입니다. 🎬 시연 3분 → 🔥 예열을 한 번 누릅니다 |
 | `.hwp` · `.pptx`가 `.pia`로 바뀜 | 사내 보호 도구의 정상 동작입니다. 사내 뷰어로 열립니다. 앱은 보호 도구를 해제하거나 우회하지 않습니다 |
 | `java`를 찾지 못함 | JDK/JRE 8 이상을 설치하고 터미널을 새로 엽니다. macOS는 `brew install openjdk` 후 안내대로 연결합니다 |
-| AI 선택 창에서 OpenRouter가 「준비 안 됨」 | `.env`에 `KOSOE_OPENROUTER_API_KEY`가 없습니다. 적은 뒤 앱을 다시 켭니다 |
+| AI 선택 창에서 NVIDIA API · OpenRouter가 「준비 안 됨」 | `.env`에 `KOSOE_NVIDIA_API_KEY` · `KOSOE_OPENROUTER_API_KEY`가 없습니다. 적은 뒤 앱을 다시 켭니다 |
+| NVIDIA API로 바꾸니 초안이 1~2분 걸림 | 그 모델의 대기열이 긴 것입니다. 목록에서 다른 모델(Nemotron)을 고르거나 OpenRouter로 바꿉니다 |
 | OpenRouter 연결 시험이 402 · 429로 실패 | 402는 잔액 부족(유료 모델), 429는 무료 모델의 요청 수 제한입니다. 목록에서 다른 모델을 고르거나 OpenRouter 대시보드에서 잔액 · 한도를 확인합니다 |
 | 포트가 이미 사용 중 | `.env`의 `KOSOE_PORT`를 바꿉니다 |
 
@@ -346,7 +353,7 @@ python tests/e2e_provider.py openrouter   # AI를 바꿔 추천 → 초안 → �
 - **한글 미리보기**는 한컴 프로그램이 아니라 오픈소스 렌더러(rhwp)가 그립니다. 시험한 문서에서는 한컴 뷰어와 양식 · 표 · 쪽 수가 같게 나왔지만, PC에 함초롬 글꼴이 없으면 글자 간격과 줄바꿈이 조금 다를 수 있습니다. 최종 확인은 「한컴 뷰어로 열기」로 합니다.
 - **삽화 자동 배치**는 아직 없습니다. 삽화 스킬은 버전 고정과 수신까지만 연결돼 있습니다.
 - **전사 공용 스킬 갱신**(잠금 커밋 올리기)은 화면이 없어 스킬 저장소에 직접 PR을 올립니다.
-- **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드도 화면에서 고른 AI(구독 CLI 또는 OpenRouter)를 씁니다(`KOSOE_CLOSED_LLM=rule`이면 규칙 기반만). OpenRouter의 DeepSeek는 **사내 GPU에 같은 모델을 올렸을 때를 대신 보여 주는 것**이고, 실제 폐쇄망에서는 `openai_compat`로 사내 주소를 연결합니다 — 이 연결은 사내 서버가 없어 시험하지 못했습니다.
+- **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드도 화면에서 고른 AI(구독 CLI · NVIDIA API · OpenRouter)를 씁니다(`KOSOE_CLOSED_LLM=rule`이면 규칙 기반만). NVIDIA API · OpenRouter의 DeepSeek는 **사내 GPU에 같은 모델을 올렸을 때를 대신 보여 주는 것**이고, 실제 폐쇄망에서는 `openai_compat`로 사내 주소를 연결합니다 — 이 연결은 사내 서버가 없어 시험하지 못했습니다.
 - **시연은 GitHub 계정 1개**로 요청과 승인을 모두 합니다. 누가 요청하고 승인했는지는 커밋 · 태그 · PR 코멘트에 가상 사용자 이름으로 남깁니다. 실제 운영에서는 각자 계정과 CODEOWNERS · 브랜치 보호를 씁니다.
 - 받은 `.hwp` 양식 채우기, `.hwpx` 출력, 그룹웨어 결재 연동은 범위 밖입니다.
 
@@ -354,7 +361,7 @@ python tests/e2e_provider.py openrouter   # AI를 바꿔 추천 → 초안 → �
 
 - 문서 · 첨부 · 작업 기록은 **이 PC**(`~/.kosoe`)에만 저장됩니다. 한글 미리보기도 브라우저 안에서만 그리며 파일을 밖으로 보내지 않습니다.
 - AI를 쓰면 요청 문장과 첨부에서 읽은 글이 **본인의 Claude 구독**으로 전송됩니다. 인터넷망 모드에서는 주민등록번호 · 휴대전화번호 · 계좌번호 · 고객사명을 가린 뒤 보내고, 대외비 양식 · 문서는 잠깁니다.
-- AI를 **OpenRouter**로 바꾸면 같은 내용이 OpenRouter와 그 뒤의 모델 제공사로 전송됩니다. 이때는 망 모드와 상관없이 항상 가린 뒤 보냅니다. 키는 `.env`에만 두고 저장소 · 화면 · 로그에 남기지 않습니다.
+- AI를 **NVIDIA API**나 **OpenRouter**로 바꾸면 같은 내용이 그 서비스(OpenRouter는 그 뒤의 모델 제공사까지)로 전송됩니다. NVIDIA 체험 약관은 기밀 · 개인정보 입력을 금지합니다. 이때는 망 모드와 상관없이 항상 가린 뒤 보냅니다. 키는 `.env`에만 두고 저장소 · 화면 · 로그에 남기지 않습니다.
 - 스킬 저장소에는 **원문 파일을 올리지 않습니다.** 구조 · 고정 문구 · 규칙과 검증 과제(대표 문서에서 뽑은 몇 줄 포함)만 올리고, 스킬 파일에 개인정보로 보이는 값이 있으면 등록이 막힙니다. 대표 문서는 가명 · 가상 자료로 준비하세요.
 - 사내 양식은 저장소 읽기 권한이 있는 사람의 PC에만 내려옵니다.
 - 사내 보호 도구가 디스크의 `.hwp` · `.pptx`를 암호화할 수 있어, 입력 템플릿은 생성할 때마다 Git에서 새로 꺼내 쓰고 python-pptx 기본 서식은 PyPI 원본을 코드에 넣어 씁니다.

@@ -84,16 +84,17 @@ def main():
             say(p['ok'], f"AI 호출 ({llm.display()})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
     else:
         say(None, f"AI: {CFG['llm_kind']}", llm.display())
-    if CFG['or_key']:
-        say(True, 'OpenRouter 키 (AI 선택에서 전환 가능)', ', '.join(CFG['or_models']))
-        if '--ping' in sys.argv:
-            keep = llm.provider()
-            llm.set_provider('openrouter')
-            p = llm.ping()
-            llm.set_provider(keep)
-            say(p['ok'], f"OpenRouter 호출 ({CFG['or_model']})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
-    else:
-        say(None, 'OpenRouter 키 없음', 'DeepSeek 등으로 바꿔 시연하려면 .env에 KOSOE_OPENROUTER_API_KEY')
+    for k, h in llm.HOSTED.items():          # 외부 API(NVIDIA · OpenRouter) — 없어도 앱은 동작
+        if CFG[h['key']]:
+            say(True, f"{h['tag']} 키 (AI 선택에서 전환 가능)", ', '.join(CFG[h['models']]))
+            if '--ping' in sys.argv:
+                keep = llm.provider()
+                llm.set_provider(k)
+                p = llm.ping()
+                llm.set_provider(keep)
+                say(True if p['ok'] else None, f"{h['tag']} 호출 ({llm.chosen_models()[k]})", f"{p.get('ms')}ms" if p['ok'] else p['error'])
+        else:
+            say(None, f"{h['tag']} 키 없음", f"DeepSeek 등으로 바꿔 시연하려면 .env에 {h['env']}")
     if os.name == 'nt':
         pp = [p for p in (r'C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE', r'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE') if os.path.exists(p)]
         say(True if pp else None, 'PowerPoint (PPT 미리보기 그림)', '있음' if pp else '없으면 장별 SVG로 미리보기')

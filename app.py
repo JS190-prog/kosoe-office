@@ -120,11 +120,19 @@ def load_ai_choice():
     r = row(con, "select v from policy where k='ai'")
     con.close()
     c = J(r['v'], {}) if r else {}
-    if c.get('kind'):
+    models = dict(c.get('models') or {})
+    if c.get('or_model'):                       # 이전 저장 형식
+        models.setdefault('openrouter', c['or_model'])
+    keep = llm.provider()
+    for k, m in models.items():                 # 외부 API별로 고른 모델(목록에서 빠졌으면 건너뜀)
         try:
-            llm.set_provider(c['kind'], c.get('or_model', ''))
+            llm.set_provider(k, m)
         except Exception:
             pass
+    try:
+        llm.set_provider(c.get('kind') or keep)
+    except Exception:
+        llm.set_provider(keep)
 
 
 def people_of(u):
@@ -339,15 +347,14 @@ def ai_get():
 @app.post('/api/ai')
 @login_required
 def ai_set():
-    """AI 제공자 바꾸기(이 PC 설정). 예: Claude Code CLI ↔ OpenRouter(DeepSeek)."""
+    """AI 제공자 바꾸기(이 PC 설정). 예: Claude Code CLI ↔ NVIDIA API · OpenRouter(DeepSeek)."""
     b = request.json or {}
     try:
-        st = llm.set_provider(b.get('kind'), b.get('or_model') or '')
+        st = llm.set_provider(b.get('kind'), b.get('model') or b.get('or_model') or '')
     except ValueError as e:
         return err(str(e))
-    cur = next((p for p in st['providers'] if p['kind'] == st['kind']), {})
     g.con.execute("insert into policy(k,v) values('ai',?) on conflict(k) do update set v=excluded.v",
-                  (json.dumps({'kind': st['kind'], 'or_model': cur.get('model', '')}, ensure_ascii=False),))
+                  (json.dumps({'kind': st['kind'], 'models': llm.chosen_models()}, ensure_ascii=False),))
     log(g.u['name'], f"AI 전환 → {st['display']}" + ('' if st['connected'] else ' (연결 안 됨 — 규칙 기반으로 동작)'))
     return ok(ai=st)
 

@@ -1,6 +1,6 @@
 """AI 제공자 전환 시험(실행 중인 앱에 HTTP로): 고른 제공자로 추천 → 초안 → 채팅 수정 → 세 형식 생성.
-python tests/e2e_provider.py [openrouter|claude_cli] [--model deepseek/deepseek-v4.1-flash] [--keep]
-끝나면 원래 제공자로 되돌린다(--keep이면 그대로 둔다).
+python tests/e2e_provider.py [nvidia|openrouter|claude_cli] [--model deepseek-ai/deepseek-v4.1-flash] [--keep]
+끝나면 원래 제공자·모델로 되돌린다(--keep이면 그대로 둔다).
 """
 import os
 import sys
@@ -9,12 +9,13 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from e2e_skillgen import call, ROOT  # noqa: E402
 
-kind = next((a for a in sys.argv[1:] if not a.startswith('--')), 'openrouter')
-model = sys.argv[sys.argv.index('--model') + 1] if '--model' in sys.argv else ''
+args = sys.argv[1:]
+model = args[args.index('--model') + 1] if '--model' in args else ''
+kind = next((a for a in args if not a.startswith('--') and a != model), 'nvidia')
 call('/api/login', {'uid': 'u1'})
 before = call('/api/ai')['ai']
-prev = next(p for p in before['providers'] if p['kind'] == before['kind'])
-st = call('/api/ai', {'kind': kind, 'or_model': model})['ai']
+was = next((p.get('model', '') for p in before['providers'] if p['kind'] == kind and p.get('models')), '')
+st = call('/api/ai', {'kind': kind, 'model': model})['ai']
 print('전환:', before['display'], '→', st['display'], '| 연결', st['connected'])
 try:
     p = call('/api/ai/ping', {})['ping']
@@ -42,11 +43,10 @@ try:
     for x in d['results']:
         bad = [k['name'] + ': ' + k['detail'] for k in x['checks'] if not k['ok']]
         print('  ', x['fmt'], '검수 미통과:', bad or '없음')
-    print('비용:', call('/api/ai')['usage'])
+    print('외부 API 사용:', call('/api/ai')['usage'])
 finally:
     if '--keep' not in sys.argv:
-        if kind == 'openrouter' and model:      # 고른 OpenRouter 모델도 원래대로
-            was = next((p.get('model', '') for p in before['providers'] if p['kind'] == 'openrouter'), '')
-            call('/api/ai', {'kind': 'openrouter', 'or_model': was})
-        call('/api/ai', {'kind': before['kind'], 'or_model': ''})
+        if model and was:                       # 고른 모델도 원래대로
+            call('/api/ai', {'kind': kind, 'model': was})
+        call('/api/ai', {'kind': before['kind'], 'model': ''})
         print('되돌림:', call('/api/ai')['ai']['display'])

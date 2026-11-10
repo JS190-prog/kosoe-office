@@ -24,7 +24,7 @@ def load_env():
                 env[k.strip()] = v.strip().strip('"').strip("'")
     get = lambda k, d='': os.environ.get(k) or env.get(k) or d
     key = get('KOSOE_LLM_API_KEY')
-    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | openrouter | anthropic | openai_compat | rule
+    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | nvidia | openrouter | anthropic | openai_compat | rule
     kind = {'cli': 'claude_cli', 'openai': 'openai_compat'}.get(kind, kind)           # + openrouter
     return {
         'home': os.path.expanduser(get('KOSOE_HOME', os.path.join('~', '.kosoe'))),
@@ -40,6 +40,11 @@ def load_env():
         'or_key': get('KOSOE_OPENROUTER_API_KEY'),
         'or_models': [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-4-31b-it:free').split(',') if m.strip()],
         'or_model': get('KOSOE_OPENROUTER_MODEL', '') or [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash').split(',')][0],
+        'nv_key': get('KOSOE_NVIDIA_API_KEY'),                              # build.nvidia.com 무료 체험 엔드포인트(평가용)
+        'nv_models': [m.strip() for m in get('KOSOE_NVIDIA_MODELS', 'deepseek-ai/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b').split(',') if m.strip()],
+        'nv_thinking': get('KOSOE_NVIDIA_THINKING', 'off'),                 # off(추론 끔 — 빠르고 답이 비지 않음) | on
+        'nv_base': get('KOSOE_NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1').rstrip('/'),
+        'nv_extra': get('KOSOE_NVIDIA_EXTRA_BODY', ''),                     # 요청 본문에 더할 JSON(추론 끄기 등 모델별 옵션)
         'or_reasoning': get('KOSOE_OPENROUTER_REASONING', 'low'),          # off | low | medium | high | default
         'or_reason_budget': int(get('KOSOE_OPENROUTER_REASON_BUDGET', '3000')),
         'claude_token': get('KOSOE_CLAUDE_TOKEN'),

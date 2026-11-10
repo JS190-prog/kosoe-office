@@ -176,38 +176,54 @@ def _call_cli(system, user, model=None):
 
 # ───────────── 제공자(provider) — 실행 중에 화면에서 바꿀 수 있다 ─────────────
 # claude_cli : 각자의 Claude Code 구독 CLI (기본)
-# openrouter : OpenRouter API(OpenAI 호환) — 사내에 올릴 오픈 모델(DeepSeek 등)을 노트북 시연에서 대신 부르는 용도
+# nvidia / openrouter : 외부 API(OpenAI 호환) — 사내에 올릴 오픈 모델(DeepSeek 등)을 노트북 시연에서 대신 부르는 용도
+#   nvidia = build.nvidia.com 무료 체험 엔드포인트(평가용), openrouter = 유료 · 일부 무료 모델
 # anthropic / openai_compat : API 키 · 사내 모델 엔드포인트      rule : AI 없이 규칙 기반만
 import threading
 _fast = threading.local()
-_active = {'kind': CFG['llm_kind'], 'or_model': CFG['or_model']}
 OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
-KIND_NAME = {'claude_cli': 'Claude Code CLI (구독)', 'openrouter': 'OpenRouter API', 'anthropic': 'Claude API', 'openai_compat': 'OpenAI 호환(사내 모델)',
-             'rule': '규칙 기반(AI 없음)'}
+# 외부 API(OpenAI 호환) — 사내 GPU에 올릴 오픈 모델을 노트북 시연에서 대신 부른다. 요청이 밖으로 나가므로 항상 가림 처리한다.
+HOSTED = {
+    'nvidia': {'name': 'NVIDIA API (build.nvidia.com)', 'tag': 'NVIDIA API', 'url': CFG['nv_base'] + '/chat/completions', 'key': 'nv_key', 'models': 'nv_models',
+               'env': 'KOSOE_NVIDIA_API_KEY', 'menv': 'KOSOE_NVIDIA_MODELS',
+               'note': 'NVIDIA가 올려 둔 오픈 모델(DeepSeek 등)을 무료 체험 엔드포인트로 부릅니다(평가용 · 요청 수 제한). 사내 GPU에 같은 모델을 올렸을 때를 대신 보여 줍니다. '
+                       '요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'},
+    'openrouter': {'name': 'OpenRouter API', 'tag': 'OpenRouter API', 'url': OPENROUTER_URL, 'key': 'or_key', 'models': 'or_models',
+                   'env': 'KOSOE_OPENROUTER_API_KEY', 'menv': 'KOSOE_OPENROUTER_MODELS',
+                   'note': '사내 GPU에 올릴 오픈 모델(DeepSeek 등)을 시연에서는 OpenRouter로 부릅니다. 요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'},
+}
+_active = {'kind': CFG['llm_kind'], 'model': {'openrouter': CFG['or_model'], 'nvidia': (CFG['nv_models'] or [''])[0]}}
+KIND_NAME = {'claude_cli': 'Claude Code CLI (구독)', 'nvidia': HOSTED['nvidia']['name'], 'openrouter': HOSTED['openrouter']['name'], 'anthropic': 'Claude API',
+             'openai_compat': 'OpenAI 호환(사내 모델)', 'rule': '규칙 기반(AI 없음)'}
 
 
 def provider():
     return _active['kind']
 
 
-def set_provider(kind, or_model=''):
+def set_provider(kind, model=''):
     if kind not in KIND_NAME:
         raise ValueError('없는 AI 제공자: ' + str(kind))
-    if kind == 'openrouter':
-        if or_model and or_model not in CFG['or_models']:
-            raise ValueError(f'목록에 없는 모델: {or_model} — .env의 KOSOE_OPENROUTER_MODELS에 추가하세요')
-        if or_model:
-            _active['or_model'] = or_model
+    if kind in HOSTED and model:
+        h = HOSTED[kind]
+        if model not in CFG[h['models']]:
+            raise ValueError(f"목록에 없는 모델: {model} — .env의 {h['menv']}에 추가하세요")
+        _active['model'][kind] = model
     _active['kind'] = kind
     return state()
+
+
+def chosen_models():
+    """외부 API별로 고른 모델(저장용)."""
+    return dict(_active['model'])
 
 
 def model_name(fast=False):
     k = provider()
     if k == 'claude_cli':
         return (CFG['cli_fast'] if fast else '') or CFG['cli_model']
-    if k == 'openrouter':
-        return _active['or_model']
+    if k in HOSTED:
+        return _active['model'][k]
     if k == 'rule':
         return '규칙 기반'
     return (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
@@ -215,7 +231,7 @@ def model_name(fast=False):
 
 def external():
     """요청 내용이 제3자 API로 나가는 제공자인가(가림 처리 대상)."""
-    return provider() in ('openrouter',)
+    return provider() in HOSTED
 
 
 def available():
@@ -224,8 +240,8 @@ def available():
         return False
     if k == 'claude_cli':
         return cli_status()['ready']
-    if k == 'openrouter':
-        return bool(CFG['or_key'])
+    if k in HOSTED:
+        return bool(CFG[HOSTED[k]['key']])
     return bool(CFG['llm_key'])
 
 
@@ -237,8 +253,8 @@ def display():
     k = provider()
     if k == 'claude_cli':
         return f"Claude {CFG['cli_model']} (구독 CLI)"
-    if k == 'openrouter':
-        return f"{_short(_active['or_model'])} (OpenRouter API)"
+    if k in HOSTED:
+        return f"{_short(_active['model'][k])} ({HOSTED[k]['tag']})"
     if k == 'rule':
         return '규칙 기반'
     return CFG['llm_model']
@@ -248,10 +264,10 @@ def state():
     """화면의 AI 선택 창에 보여 줄 제공자 목록과 현재 선택."""
     cli = cli_status()
     out = [{'kind': 'claude_cli', 'name': KIND_NAME['claude_cli'], 'ready': cli['ready'], 'model': CFG['cli_model'],
-            'detail': cli['detail'] if cli['ready'] else (cli['detail'] or '로그인 필요'), 'note': '각자 구독으로 로그인한 Claude Code CLI를 부릅니다.'},
-           {'kind': 'openrouter', 'name': KIND_NAME['openrouter'], 'ready': bool(CFG['or_key']), 'model': _active['or_model'], 'models': CFG['or_models'],
-            'detail': '키 있음' if CFG['or_key'] else '.env에 KOSOE_OPENROUTER_API_KEY 필요',
-            'note': '사내 GPU에 올릴 오픈 모델(DeepSeek 등)을 시연에서는 OpenRouter로 부릅니다. 요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'}]
+            'detail': cli['detail'] if cli['ready'] else (cli['detail'] or '로그인 필요'), 'note': '각자 구독으로 로그인한 Claude Code CLI를 부릅니다.'}]
+    for k, h in HOSTED.items():
+        out.append({'kind': k, 'name': h['name'], 'ready': bool(CFG[h['key']]), 'model': _active['model'][k], 'models': CFG[h['models']],
+                    'detail': '키 있음' if CFG[h['key']] else f".env에 {h['env']} 필요", 'note': h['note']})
     if CFG['llm_key'] and CFG['llm_kind'] in ('anthropic', 'openai_compat'):
         out.append({'kind': CFG['llm_kind'], 'name': KIND_NAME[CFG['llm_kind']], 'ready': True, 'model': CFG['llm_model'], 'detail': CFG['llm_base'], 'note': ''})
     out.append({'kind': 'rule', 'name': KIND_NAME['rule'], 'ready': True, 'model': '', 'detail': '', 'note': 'AI 없이 규칙으로만 초안을 만듭니다(품질 낮음).'})
@@ -285,21 +301,31 @@ def call(system, user, max_tokens=2500, fast=False):
     model = model_name(fast)
     if k == 'claude_cli':
         return _call_cli(system, user, model), int((time.time() - t0) * 1000)
-    if k == 'openrouter':
+    if k in HOSTED:
+        h = HOSTED[k]
         body = {'model': model, 'max_tokens': max(max_tokens, 1200) + CFG['or_reason_budget'],     # 추론 토큰이 답 토큰을 잡아먹지 않게 여유
                 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
-        if CFG['or_reasoning'] in ('low', 'medium', 'high'):
-            body['reasoning'] = {'effort': CFG['or_reasoning']}
-        elif CFG['or_reasoning'] == 'off':
-            body['reasoning'] = {'enabled': False}
-        data = _post(OPENROUTER_URL, body, {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['or_key'],
-                                            'x-title': 'kosoe-office'})
+        headers = {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG[h['key']]}
+        if k == 'openrouter':
+            headers['x-title'] = 'kosoe-office'
+            if CFG['or_reasoning'] in ('low', 'medium', 'high'):
+                body['reasoning'] = {'effort': CFG['or_reasoning']}
+            elif CFG['or_reasoning'] == 'off':
+                body['reasoning'] = {'enabled': False}
+        else:
+            if CFG['nv_thinking'] == 'off':         # 추론을 켜 두면 답 토큰을 다 써서 빈 응답이 나온다(시험에서 확인)
+                body['chat_template_kwargs'] = {'thinking': False}
+            if CFG['nv_extra']:
+                body.update(json.loads(CFG['nv_extra']))
+        data = _post(h['url'], body, headers)
         if data.get('error'):
-            raise RuntimeError(str(data['error'].get('message') or data['error'])[:200])
+            e = data['error']
+            raise RuntimeError(str(e.get('message') if isinstance(e, dict) else e)[:200])
         text = (data.get('choices') or [{}])[0].get('message', {}).get('content') or ''
         if not text.strip():
-            raise RuntimeError('빈 응답(추론만 하고 답이 없음) — KOSOE_OPENROUTER_REASONING=off 또는 low 로 바꿔 보세요')
-        _usage.append({'model': model, 'cost': (data.get('usage') or {}).get('cost'), 'tokens': (data.get('usage') or {}).get('total_tokens')})
+            raise RuntimeError('빈 응답(추론만 하고 답이 없음) — ' + ('KOSOE_OPENROUTER_REASONING=off 또는 low 로 바꿔 보세요' if k == 'openrouter'
+                                                           else 'KOSOE_NVIDIA_THINKING=off 로 두세요'))
+        _usage.append({'kind': k, 'model': model, 'cost': (data.get('usage') or {}).get('cost'), 'tokens': (data.get('usage') or {}).get('total_tokens')})
         del _usage[:-200]
         return text, int((time.time() - t0) * 1000)
     if k == 'openai_compat':
@@ -313,12 +339,15 @@ def call(system, user, max_tokens=2500, fast=False):
     return ''.join(b.get('text', '') for b in data['content']), int((time.time() - t0) * 1000)
 
 
-_usage = []          # OpenRouter 호출별 비용(시연 중 확인용)
+_usage = []          # 외부 API 호출별 비용(시연 중 확인용). NVIDIA 체험 엔드포인트는 비용이 없다.
 
 
 def usage():
     cost = sum(u['cost'] or 0 for u in _usage)
-    return {'calls': len(_usage), 'cost_usd': round(cost, 6)}
+    by = {}
+    for u in _usage:
+        by[u.get('kind', 'openrouter')] = by.get(u.get('kind', 'openrouter'), 0) + 1
+    return {'calls': len(_usage), 'cost_usd': round(cost, 6), 'by': by}
 
 
 def call_json(system, user, max_tokens=2500, fast=False):
@@ -334,7 +363,7 @@ def ping():
     if not available():
         k = provider()
         return {'ok': False, 'error': cli_status(True)['detail'] if k == 'claude_cli' else '규칙 기반 설정' if k == 'rule' else
-                '.env에 KOSOE_OPENROUTER_API_KEY 없음' if k == 'openrouter' else 'KOSOE_LLM_API_KEY 없음'}
+                f".env에 {HOSTED[k]['env']} 없음" if k in HOSTED else 'KOSOE_LLM_API_KEY 없음'}
     try:
         t, ms = call('짧게 답한다.', '"ok" 한 단어만 출력', 10)
         return {'ok': True, 'ms': ms, 'model': display(), 'reply': t.strip()[:40]}
