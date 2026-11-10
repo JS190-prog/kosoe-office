@@ -58,29 +58,156 @@ def num(s):
 
 
 # ───────────── 한글 ─────────────
+# 양식 preset 으로 한글 스킬의 서식을 고른다: detail(상세보고·투자계획서) · draft(기안문 본문) · form:<사양 경로>(신청서) · 그 밖은 요약보고
+DRAFT_TEMPLATES = ['draft_base.hwp', 'draft_catalog.properties']
+FORM_AUTO = ('담당', '팀장', '부서장', '부서', '신청일', '요청일', '합계')     # 신청서에서 앱이 채우는 칸
+FORM_ME = ('신청자', '요청자', '출장자')                                       # 비어 있으면 작성자로
+PH = re.compile(r'\{\{([^{}]+)\}\}')
+
+
+def hwp_kind(template):
+    p = template.get('preset') or ''
+    return 'form' if p.startswith('form:') else p if p in ('detail', 'draft') else 'summary'
+
+
+def _hwp_items(s, table_style=2):
+    """설계도의 장 하나 → 렌더러 항목(표를 먼저, 그다음 ㅇ 항목과 하위 -)."""
+    items = []
+    if s.get('table'):
+        t = s['table']
+        items.append({'type': 'table', **({'style': table_style} if table_style else {}), 'rows': [t['cols']] + t['rows']})
+    for it in s['items']:
+        o = {'type': 'o', 'text': it['text']}
+        if it.get('label'):
+            o['label'] = it['label']
+        if it.get('children'):
+            o['children'] = [{'type': 'dash', 'text': c['text']} for c in it['children']]
+        items.append(o)
+    return items
+
+
 def to_report(bp, template, people):
-    """people = {'담당','팀장','부서장','dept'}"""
-    secs = []
-    for s in bp['sections']:
-        items = []
-        if s.get('table'):
-            t = s['table']
-            items.append({'type': 'table', 'style': 2, 'rows': [t['cols']] + t['rows']})
-        for it in s['items']:
-            o = {'type': 'o', 'text': it['text']}
-            if it.get('label'):
-                o['label'] = it['label']
-            if it.get('children'):
-                o['children'] = [{'type': 'dash', 'text': c['text']} for c in it['children']]
-            items.append(o)
-        if not items:
-            items.append({'type': 'o', 'text': '(내용 없음)'})
-        secs.append({'heading': s['heading'], 'items': items})
+    """people = {'담당','팀장','부서장','dept','hq'}"""
+    kind = hwp_kind(template)
+    if kind == 'detail':
+        return to_detail(bp, people)
+    if kind == 'draft':
+        return to_draft(bp)
+    if kind == 'form':
+        return to_form(bp, template['preset'][5:], people)
+    secs = [{'heading': s['heading'], 'items': _hwp_items(s) or [{'type': 'o', 'text': '(내용 없음)'}]} for s in bp['sections']]
     rep = {'type': 'summary', 'title': bp['title'], 'date': today_kr(), 'dept': people.get('dept') or '○○팀',
            'approval': {k: people.get(k, '') for k in ('담당', '팀장', '부서장')}, 'sections': secs}
     if template.get('preset'):
         rep['preset'] = template['preset']
     return rep
+
+
+def to_detail(bp, people):
+    """상세보고(투자계획서 양식): 설계도의 장 → I, II … 장. 라벨 있는 항목이 둘 이상이면 라벨이 대제목(1. 2.),
+    아니면 첫 항목을 □ 문장으로 두고 나머지를 ㅇ 항목으로."""
+    chapters = []
+    for s in bp['sections']:
+        items = _hwp_items(s) or [{'type': 'o', 'text': '(내용 없음)'}]
+        if sum(1 for o in items if o.get('label')) >= 2:
+            secs, lead = [], []
+            for o in items:
+                if o.get('label'):
+                    secs.append({'heading': o.pop('label'), 'items': [o]})
+                elif secs:
+                    secs[-1]['items'].append(o)
+                else:
+                    lead.append(o)                       # 첫 라벨 앞(표 등)은 장 끝에 둔다
+            secs[-1]['items'] += lead
+        else:
+            first = next((o for o in items if o['type'] == 'o'), None)
+            if first is None:
+                secs = [{'style': 'box', 'heading': s['heading'], 'items': items}]
+            else:
+                rest = [{'type': 'o', 'text': c['text']} for c in first.get('children', [])] + [o for o in items if o is not first]
+                head = f"{first['label']} : {first['text']}" if first.get('label') else first['text']
+                secs = [{'style': 'box', 'heading': head, 'items': rest}]
+        chapters.append({'title': s['heading'], 'sections': secs})
+    y, m = today_kr().split('. ')[:2]
+    return {'type': 'detail', 'title': bp['title'], 'date': f'{y}.{m}', 'hq': people.get('hq') or people.get('dept') or '○○본부',
+            'dept': people.get('dept') or '○○팀',
+            'approval': {'담당': people.get('담당', ''), '팀장': people.get('팀장', ''), '부장': people.get('부서장', '')}, 'chapters': chapters}
+
+
+def draft_purpose(title):
+    """기안 제목 → 「아래와 같이 ○○을/를 추진하고자」의 ○○ (끝의 (안)·건·추진을 뗀다)."""
+    t = re.sub(r'\s*\(안\)$', '', title.strip())
+    t = re.sub(r'(\s+|의\s*)건$', '', t)
+    return re.sub(r'\s+추진$', '', t).strip() or title
+
+
+def to_draft(bp):
+    """기안문 본문: 「…근거」 장의 항목 → 관련 근거, 제목 → 추진하는 일, 나머지 장 → 「아래」 번호 항목."""
+    basis, secs = [], []
+    for s in bp['sections']:
+        if '근거' in s['heading']:
+            basis += [it['text'] for it in s['items'] if it['text'].strip() and '확인 필요' not in it['text']]
+        else:
+            secs.append({'heading': s['heading'], 'items': _hwp_items(s, None) or [{'type': 'o', 'text': '(내용 없음)'}]})
+    return {'type': 'draft', 'basis': basis, 'purpose': draft_purpose(bp['title']), 'sections': secs}
+
+
+def form_fields(path):
+    """신청서 사양(한글 스킬의 {{칸}} report.json)에서 사람이 채울 칸 이름 — 나오는 순서, 앱이 채우는 칸은 뺀다."""
+    out = []
+    for m in PH.finditer(corp.read_text(HWP, path)):
+        n = m.group(1).strip()
+        if n not in out and n not in FORM_AUTO:
+            out.append(n)
+    return out
+
+
+def form_prefill(bp, people):
+    """신청서 초안: 작성자 칸(신청자·요청자·출장자)이 비었거나 (확인 필요)면 작성자로 — 편집 화면과 검수에도 보이게."""
+    for s in bp['sections']:
+        for it in s['items']:
+            if it.get('label') in FORM_ME and people.get('담당') and (not it['text'].strip() or '확인 필요' in it['text']):
+                it['text'] = people['담당']
+    return bp
+
+
+def form_total(spec, vals):
+    """「합계」 칸 = 같은 표·같은 열에서 위쪽 {{칸}} 금액의 합(「-」는 0). 값이 없거나 금액이 아닌 칸이 하나라도 있으면 None(못 셈)."""
+    for sec in spec.get('sections', []):
+        for it in sec.get('items', []):
+            rows = it.get('rows') if it.get('type') == 'table' else None
+            for i, r in enumerate(rows or []):
+                for j, c in enumerate(r):
+                    if str(c).strip() != '{{합계}}':
+                        continue
+                    tot, seen = 0, False
+                    for above in rows[:i]:
+                        m = PH.fullmatch(str(above[j]).strip()) if j < len(above) else None
+                        v = vals.get(m.group(1).strip()) if m else '-'
+                        if v == '-':
+                            continue
+                        if v is None or num(v) is None:
+                            return None
+                        tot, seen = tot + num(v), True
+                    if seen:
+                        return f'{int(tot):,}' if tot == int(tot) else f'{tot:,.2f}'
+    return None
+
+
+def to_form(bp, path, people):
+    """신청서: 설계도의 「라벨 : 값」 → {{칸}} 값. 결재라인·날짜·부서는 작성자 정보, 합계는 계산, 못 채운 칸은 (확인 필요)."""
+    spec = json.loads(corp.read_text(HWP, path))
+    vals = {it['label'].strip(): it['text'].strip() for s in bp['sections'] for it in s['items'] if it.get('label') and it['text'].strip()}
+    me = people.get('담당', '')
+    for k in FORM_ME:
+        if not vals.get(k) or '확인 필요' in vals[k]:
+            vals[k] = me
+    vals = {'담당': me, '팀장': people.get('팀장', ''), '부서장': people.get('부서장', ''), '부서': people.get('dept', ''),
+            '신청일': today_kr(), '요청일': today_kr(), **vals}
+    if '합계' not in vals:
+        vals['합계'] = form_total(spec, vals) or '(확인 필요)'
+    s = PH.sub(lambda m: json.dumps(vals.get(m.group(1).strip(), '(확인 필요)'), ensure_ascii=False)[1:-1], json.dumps(spec, ensure_ascii=False))
+    return json.loads(s)
 
 
 def make_hwp(bp, template, people, path, jd):
@@ -89,7 +216,8 @@ def make_hwp(bp, template, people, path, jd):
     json.dump(rep, open(jp, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     # 기본 양식은 매번 git 객체에서 새로 꺼낸다(사내 보호 도구가 캐시 파일을 암호화해도 영향 없음)
     tdir = os.path.join(jd, 'templates')
-    corp.fresh_copy(HWP, [f'templates/{n}' for n in HWP_TEMPLATES], tdir)
+    names = HWP_TEMPLATES + (DRAFT_TEMPLATES if rep['type'] == 'draft' else [])
+    corp.fresh_copy(HWP, [f'templates/{n}' for n in names], tdir)
     code, out = _java('Renderer', jp, path, tdir)
     if code != 0 or not os.path.exists(path):
         raise RuntimeError('한글 렌더링 실패: ' + out.strip()[-300:])
@@ -469,11 +597,37 @@ def short_title(t, n=22):
     return out or t[:n]
 
 
-def engine_of(fmt):
-    """화면 표시용: 이 형식을 만드는 전사 스킬과 고정 버전."""
+if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신청서 합계 · 기안 목적 · 기안문/상세보고 변환
+    spec = {'sections': [{'items': [{'type': 'table', 'rows': [['항목', '금액'], ['교통비', '{{교통비}}'], ['숙박비', '{{숙박비}}'], ['합계', '{{합계}}']]}]}]}
+    assert form_total(spec, {'교통비': '119,600', '숙박비': '90,000'}) == '209,600'
+    assert form_total(spec, {'교통비': '119,600', '숙박비': '-'}) == '119,600'
+    assert form_total(spec, {'교통비': '119,600', '숙박비': '(확인 필요)'}) is None and form_total(spec, {}) is None
+    assert form_total(spec, {'교통비': '119,600'}) is None          # 숙박비 칸 값이 없으면 합계를 셀 수 없다
+    assert [draft_purpose(t) for t in ('회의실 장비 교체 추진(안)', '회의실 장비 교체의 건', '보안 사건 대응 계획')] == \
+        ['회의실 장비 교체', '회의실 장비 교체', '보안 사건 대응 계획']
+    bp = {'title': 'X 추진', 'sections': [
+        {'heading': '관련 근거', 'items': [{'text': '총무2026-1(2026. 1. 2. : 보고)'}, {'text': '(확인 필요)'}]},
+        {'heading': '추진 개요', 'items': [{'label': '배경', 'text': 'a', 'children': [{'text': 'b'}]}], 'table': {'cols': ['c'], 'rows': [['1']]}}]}
+    d = to_draft(bp)
+    assert d['basis'] == ['총무2026-1(2026. 1. 2. : 보고)'] and d['purpose'] == 'X'
+    assert d['sections'][0]['items'][0] == {'type': 'table', 'rows': [['c'], ['1']]}
+    det = to_detail({**bp, 'sections': bp['sections'][1:] + [{'heading': '효과', 'items': [{'label': '가', 'text': '1'}, {'label': '나', 'text': '2'}]}]},
+                    {'dept': '팀'})
+    assert det['chapters'][0]['sections'][0]['style'] == 'box' and det['chapters'][0]['sections'][0]['heading'] == '배경 : a'
+    assert [s['heading'] for s in det['chapters'][1]['sections']] == ['가', '나'] and det['hq'] == '팀'
+    print('engines selftest OK')
+
+
+def engine_of(fmt, preset=''):
+    """화면 표시용: 이 형식을 만드는 전사 스킬과 고정 버전(양식 preset 이 고른 서식·덱·원고까지)."""
+    import ppt_chevron
+    import webslide
     cid = {'hwp': HWP, 'ppt': 'koscom-doc-pack', 'web': 'koscom-webslide'}[fmt]
     c = corp.info(cid) or {}
-    name = {'hwp': 'koscom-hwp-report', 'ppt': 'ppt-master · koscom-chevron', 'web': 'koscom-webslide'}[fmt]
+    kind = hwp_kind({'preset': preset})
+    name = {'hwp': 'koscom-hwp-report' + ('' if kind == 'summary' else ' · ' + {'detail': '상세보고', 'draft': '기안문', 'form': '신청서'}[kind]),
+            'ppt': 'ppt-master · ' + ppt_chevron.deck_name(preset),
+            'web': 'koscom-webslide' + ('' if webslide.template_id(preset) == 'kosoe' else ' · ' + webslide.template_id(preset))}[fmt]
     return {'corp': cid, 'name': name, 'sha': (c.get('sha') or '')[:7]}
 
 
@@ -483,7 +637,7 @@ def make(fmt, bp, template, people, doc_id, ver):
     path = out_path(doc_id, ver, ext)
     jd = job_dir(doc_id, ver)
     warns = []
-    engine = engine_of(fmt)
+    engine = engine_of(fmt, template.get('preset') or '')
     if fmt == 'hwp':
         warns = make_hwp(bp, template, people, path, jd)
     elif fmt == 'ppt':
