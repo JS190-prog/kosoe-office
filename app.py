@@ -11,6 +11,7 @@ from shutil import which as shutil_which
 import subprocess
 import threading
 import time
+import urllib.parse
 from functools import wraps
 
 import yaml
@@ -91,34 +92,52 @@ def J(s, d=None):
         return d
 
 
-# 폐쇄망에서 쓰는 사내 LLM — 화면(🤖 표시)에서 고르면 사용자마다 policy 표의 closed_llm:<사용자 id> 에 남고, 없으면 .env 의 KOSOE_CLOSED_LLM
-CLOSED = {'same': 'Claude 구독 CLI (시연)', 'bizcoder': f"BizCoder · {CFG['bizcoder_label']}", 'rule': '규칙 기반 (AI 없음)'}
+# 폐쇄망에서 쓰는 사내 LLM — 화면(🤖 표시)에서 고르면 사용자마다 policy 표의 closed_llm:<사용자 id> 에 남고, 없으면 .env 의 KOSOE_CLOSED_LLM.
+# 설정(BizCoder 모델 · Ollama 서버 주소·모델)도 사용자마다 llm_cfg:<사용자 id> 에, 없으면 .env 기본값
+CLOSED = ('bizcoder', 'ollama', 'same', 'rule')
+
+
+def _mine(key):
+    u = g.get('u')          # 로그인 없이 부르는 /api/health 에서는 .env 기본값
+    r = u and row(g.con, 'select v from policy where k=?', f"{key}:{u['id']}")
+    return r['v'] if r else None
 
 
 def closed_choice():
-    u = g.get('u')          # 로그인 없이 부르는 /api/health 에서는 .env 기본값
-    r = u and row(g.con, 'select v from policy where k=?', 'closed_llm:' + u['id'])
-    v = r['v'] if r else CFG['closed_llm']
+    v = _mine('closed_llm') or CFG['closed_llm']
     return v if v in CLOSED else 'same'
 
 
+def llm_cfg():
+    s = J(_mine('llm_cfg'), {})
+    return {'bizcoder': {'model': CFG['bizcoder_model'], **s.get('bizcoder', {})},
+            'ollama': {'url': CFG['ollama_url'], 'model': CFG['ollama_model'], **s.get('ollama', {})}}
+
+
+def closed_label(c, cfg):
+    m = cfg['bizcoder']['model']
+    return {'bizcoder': 'BizCoder · ' + (CFG['bizcoder_label'] if m == CFG['bizcoder_model'] else m.split('/')[-1]),
+            'ollama': 'Ollama · ' + (cfg['ollama']['model'] or '모델 미설정'),
+            'same': 'Claude 구독 CLI (시연)', 'rule': '규칙 기반 (AI 없음)'}[c]
+
+
 def ai_ctx(fast=False):
-    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 고른 사내 LLM(BizCoder · 시연용 구독 CLI · 규칙)."""
+    """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 고른 사내 LLM(BizCoder · Ollama · 시연용 구독 CLI · 규칙)."""
     if g.net == 'internet':
         pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
         return {'use_llm': True, 'label': f"{llm.display()} (인터넷망 · 마스킹)", 'mk': llm.Masker(pol), 'fast': fast}
-    c = closed_choice()
+    c, cfg = closed_choice(), llm_cfg()
     if c == 'rule':
         return {'use_llm': False}
-    if c == 'bizcoder':
-        return {'use_llm': True, 'label': f"사내 LLM · {CLOSED['bizcoder']}", 'mk': None, 'fast': fast, 'provider': 'bizcoder'}
+    if c in ('bizcoder', 'ollama'):
+        return {'use_llm': True, 'label': '사내 LLM · ' + closed_label(c, cfg), 'mk': None, 'fast': fast, 'provider': c, 'cfg': cfg[c]}
     return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
 
 
 def ai_state():
-    c = closed_choice()
-    biz = llm.bizcoder_status() if c == 'bizcoder' else {}
-    closed = {'closed': c, 'closed_label': CLOSED[c], 'closed_ready': biz.get('ready', True), 'closed_detail': biz.get('detail', '')}
+    c, cfg = closed_choice(), llm_cfg()
+    st = llm.bizcoder_status() if c == 'bizcoder' else llm.ollama_status(**cfg['ollama']) if c == 'ollama' else {}
+    closed = {'closed': c, 'closed_label': closed_label(c, cfg), 'closed_ready': st.get('ready', True), 'closed_detail': st.get('detail', '')}
     if CFG['llm_kind'] == 'claude_cli':
         st = llm.cli_status()
         return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'detail': st['detail'], **closed}
@@ -349,13 +368,15 @@ def me():
 @app.get('/api/ai/closed')
 @login_required
 def closed_llm_get():
-    """사내 LLM 고르기 화면: 선택지와 지금 쓸 수 있는지(BizCoder 로그인·구독 CLI 로그인)."""
-    biz = llm.bizcoder_status(force=True)
-    return ok(choice=closed_choice(), options=[
-        {'id': 'bizcoder', 'label': CLOSED['bizcoder'], 'ready': biz['ready'],
-         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {CFG['bizcoder_model']} · {biz['detail']}"},
-        {'id': 'same', 'label': CLOSED['same'], 'ready': llm.available(), 'desc': f"{llm.display()} — 사내 LLM 자리를 대신하는 시연용"},
-        {'id': 'rule', 'label': CLOSED['rule'], 'ready': True, 'desc': 'AI 없이 규칙 기반 보조로만 초안을 만듭니다'}])
+    """사내 LLM 고르기 화면: 선택지 · 지금 쓸 수 있는지 · 내 설정(BizCoder 허용 모델 목록 포함)."""
+    cfg = llm_cfg()
+    biz, ol = llm.bizcoder_status(force=True), llm.ollama_status(**cfg['ollama'], force=True)
+    return ok(choice=closed_choice(), cfg=cfg, bizcoder_models=llm.bizcoder_models() if biz['ready'] else [], options=[
+        {'id': 'bizcoder', 'label': closed_label('bizcoder', cfg), 'ready': biz['ready'],
+         'desc': f"회사 BizCoder 계정으로 사내 모델 호출 · {cfg['bizcoder']['model']} · {biz['detail']}"},
+        {'id': 'ollama', 'label': closed_label('ollama', cfg), 'ready': ol['ready'], 'desc': f"사내 Ollama 서버 {cfg['ollama']['url']} · {ol['detail']}"},
+        {'id': 'same', 'label': closed_label('same', cfg), 'ready': llm.available(), 'desc': f"{llm.display()} — 사내 LLM 자리를 대신하는 시연용"},
+        {'id': 'rule', 'label': closed_label('rule', cfg), 'ready': True, 'desc': 'AI 없이 규칙 기반 보조로만 초안을 만듭니다'}])
 
 
 @app.post('/api/ai/closed')
@@ -364,11 +385,54 @@ def closed_llm_set():
     v = (request.json or {}).get('choice')
     if v not in CLOSED:
         return err('알 수 없는 선택입니다')
-    if v == 'bizcoder' and not llm.bizcoder_status(force=True)['ready']:
-        return err('BizCoder를 쓸 수 없습니다: ' + llm.bizcoder_status()['detail'])
+    cfg = llm_cfg()
+    st = llm.bizcoder_status(force=True) if v == 'bizcoder' else llm.ollama_status(**cfg['ollama'], force=True) if v == 'ollama' else {'ready': True}
+    if not st['ready']:
+        return err(f"{closed_label(v, cfg)}를 쓸 수 없습니다: {st['detail']}")
     g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('closed_llm:' + g.u['id'], v))
-    log(g.u['name'], f'사내 LLM 선택 → {CLOSED[v]}')
+    log(g.u['name'], f'사내 LLM 선택 → {closed_label(v, cfg)}')
     return ok(ai=ai_state())
+
+
+def _http_url(v):
+    p = urllib.parse.urlparse(str(v or '').strip())
+    return p.geturl().rstrip('/') if p.scheme in ('http', 'https') and p.netloc else ''
+
+
+@app.post('/api/ai/settings')
+@login_required
+def llm_settings():
+    """내 사내 LLM 설정 저장: BizCoder 모델(회사 정책 허용 목록 안) · Ollama 서버 주소·모델.
+    서버에 연결되지 않아도 저장한다 — 사내망 주소를 미리 넣어 둘 수 있게(고를 때 연결을 확인한다)."""
+    b, cfg = request.json or {}, llm_cfg()
+    bm = (b.get('bizcoder') or {}).get('model')
+    if bm and bm != cfg['bizcoder']['model']:
+        if bm not in llm.bizcoder_models():
+            return err('회사 정책이 허용한 BizCoder 모델이 아닙니다: ' + str(bm)[:80])
+        cfg['bizcoder']['model'] = bm
+    o = b.get('ollama') or {}
+    if 'url' in o:
+        cfg['ollama']['url'] = _http_url(o['url'])
+        if not cfg['ollama']['url']:
+            return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다 (예: http://10.10.1.20:11434)')
+    if 'model' in o:
+        cfg['ollama']['model'] = str(o['model'] or '').strip()[:200]
+    g.con.execute('insert into policy values(?, ?) on conflict(k) do update set v=excluded.v', ('llm_cfg:' + g.u['id'], json.dumps(cfg, ensure_ascii=False)))
+    log(g.u['name'], f"사내 LLM 설정 — BizCoder {cfg['bizcoder']['model']} · Ollama {cfg['ollama']['url']} {cfg['ollama']['model']}")
+    return ok(cfg=cfg, ai=ai_state())
+
+
+@app.get('/api/ai/ollama/models')
+@login_required
+def ollama_models():
+    """설정 화면의 [모델 불러오기]: 입력한 Ollama 서버의 글쓰기용 모델 목록."""
+    url = _http_url(request.args.get('url'))
+    if not url:
+        return err('Ollama 서버 주소는 http:// 또는 https:// 로 시작해야 합니다')
+    try:
+        return ok(models=llm.ollama_models(url))
+    except Exception as e:
+        return err(f'Ollama 서버에 연결할 수 없습니다 ({url}) — {str(e)[:100]}')
 
 
 @app.post('/api/net')

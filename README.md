@@ -256,8 +256,9 @@ AI 호출은 `llm.py` 한 곳에 모여 있습니다. 기본은 각자의 Claude
 | `KOSOE_LLM_MODEL` / `KOSOE_LLM_FAST_MODEL` | `sonnet` / `haiku` | 작성용 / 가벼운 일(추천 · 줄이기)용 모델 |
 | `KOSOE_CLAUDE_CLI` | 자동 탐색 | Claude Code CLI 경로. 1.x는 쓰지 않습니다 |
 | `KOSOE_LLM_API_KEY` / `KOSOE_LLM_BASE_URL` | — | `anthropic` · `openai_compat`일 때만 |
-| `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(시연: 같은 모델) · `bizcoder`(사내 LLM) · `rule`. 상단 🤖 칩에서 사용자마다 고르면 그 선택이 우선 |
-| `KOSOE_BIZCODER_MODEL` / `KOSOE_BIZCODER_LABEL` | `bizrouter/deepseek/deepseek-v4-flash-0731` / `DeepSeek V4 Flash` | BizCoder로 부를 모델과 화면 이름. 먼저 터미널에서 `bizcoder login` |
+| `KOSOE_CLOSED_LLM` | `same` | 폐쇄망 모드의 AI. `same`(시연: 같은 모델) · `bizcoder` · `ollama`(사내 LLM) · `rule`. 상단 🤖 칩에서 사용자마다 고르면 그 선택이 우선 |
+| `KOSOE_OLLAMA_URL` / `KOSOE_OLLAMA_MODEL` | `http://localhost:11434` / — | 사내망 Ollama 서버와 모델의 기본값. 🤖 칩 → ⚙ 설정에서 사용자마다 바꿉니다(모델은 서버에서 불러와 고름) |
+| `KOSOE_BIZCODER_MODEL` / `KOSOE_BIZCODER_LABEL` | `bizrouter/deepseek/deepseek-v4-flash-0731` / `DeepSeek V4 Flash` | BizCoder 기본 모델과 화면 이름. ⚙ 설정에서 회사 정책이 허용한 모델로 바꿀 수 있습니다. 먼저 터미널에서 `bizcoder login` |
 | `KOSOE_BIZCODER_CLI` | 자동 탐색 | BizCoder CLI 실행 파일 경로(npm 전역 설치면 비워 둡니다) |
 | `KOSOE_SKILLS_REPO` | `humanist96/kosoe-office-skills` | 스킬 정본 저장소 |
 | `KOSOE_PPT_ENGINE` | `ppt-master` | `ppt-master`(전사 스킬) · `lite`(경량 대체) |
@@ -323,7 +324,7 @@ python tests/make_samples.py      # 새 문서 카드 샘플 그림 → 스킬 �
 
 - **삽화 자동 배치**는 아직 없습니다. 삽화 스킬은 버전 고정과 수신까지만 연결돼 있습니다.
 - **전사 공용 스킬 갱신**(잠금 커밋 올리기)은 화면이 없어 스킬 저장소에 직접 PR을 올립니다.
-- **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드의 AI는 상단 🤖 칩에서 BizCoder(사내 LLM) · 같은 구독 CLI(시연) · 규칙 기반 중에 고릅니다. 망 자체를 나누지는 않습니다.
+- **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드의 AI는 상단 🤖 칩에서 BizCoder · Ollama(사내 LLM) · 같은 구독 CLI(시연) · 규칙 기반 중에 고릅니다. 망 자체를 나누지는 않습니다.
 - **시연은 GitHub 계정 1개**로 요청과 승인을 모두 합니다. 누가 요청하고 승인했는지는 커밋 · 태그 · PR 코멘트에 가상 사용자 이름으로 남깁니다. 실제 운영에서는 각자 계정과 CODEOWNERS · 브랜치 보호를 씁니다.
 - 받은 `.hwp` 양식 채우기, `.hwpx` 출력, 그룹웨어 결재 연동은 범위 밖입니다.
 

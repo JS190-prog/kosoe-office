@@ -187,7 +187,7 @@ BIZ_ENV = {'OPENCODE_DISABLE_CLAUDE_CODE': '1', 'OPENCODE_DISABLE_CODEX': '1', '
            'OPENCODE_DISABLE_CLAUDE_CODE_MEMORY': '1', 'OPENCODE_DISABLE_CODEX_SKILLS': '1', 'OPENCODE_DISABLE_PROJECT_CONFIG': '1',
            'OPENCODE_DISABLE_AUTOUPDATE': '1', 'BIZCODER_DISABLE_WORKFLOWS': '1', 'OPENCODE_PURE': '1',
            'OPENCODE_CONFIG_CONTENT': json.dumps({'tools': {'*': False}})}
-_biz = {'p': None, 't': 0, 'v': None}
+_biz = {'p': None, 't': 0, 'v': None, 'm': None, 'mt': 0}
 
 
 def bizcoder_path():
@@ -224,11 +224,26 @@ def bizcoder_status(force=False):
     return v
 
 
-def _call_bizcoder(system, user):
+def bizcoder_models():
+    """회사 관리자가 내 계정에 허용한 모델(bizcoder models = bizcoder policy 의 「쓸 수 있는 모델」, 10분 캐시)."""
+    if _biz['m'] is not None and time.time() - _biz['mt'] < 600:
+        return _biz['m']
+    exe, ms = bizcoder_path(), []
+    if exe:
+        try:
+            r = subprocess.run([exe, 'models'], capture_output=True, timeout=60, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
+            ms = [l.strip() for l in r.stdout.decode('utf-8', 'replace').splitlines() if l.strip().startswith('bizrouter/')]
+        except Exception:
+            pass
+    _biz.update(m=ms, mt=time.time())
+    return ms
+
+
+def _call_bizcoder(system, user, model=None):
     exe = bizcoder_path()
     if not exe:
         raise RuntimeError('BizCoder CLI 없음')
-    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', CFG['bizcoder_model'], '--dir', BIZ_DIR],
+    r = subprocess.run([exe, 'run', '--pure', '--format', 'json', '-m', model or CFG['bizcoder_model'], '--dir', BIZ_DIR],
                        input=f'{system}\n\n{user}'.encode('utf-8'), capture_output=True, timeout=300, env={**os.environ, **BIZ_ENV}, cwd=BIZ_DIR)
     ev = []
     for line in r.stdout.decode('utf-8', 'replace').splitlines():
@@ -245,6 +260,68 @@ def _call_bizcoder(system, user):
             _biz.update(t=0, v=None)
             msg += ' → 터미널에서 bizcoder login'
         raise RuntimeError('BizCoder: ' + msg[:300])
+    return text
+
+
+# ───────────── Ollama(사내망 모델 서버) ─────────────
+# 폐쇄망의 사내 모델 서버(Ollama)를 /api/chat 으로 부른다. 서버 주소·모델은 사용자가 화면 설정에서 정한다(ctx['cfg']).
+_ol = {}
+
+
+def ollama_models(url):
+    """서버의 글쓰기용 모델 [{'name', 'cloud'}] — 임베딩 전용은 뺀다. cloud = ollama.com 에서 도는 모델(문서가 PC 밖으로 나감)."""
+    with urllib.request.urlopen(url.rstrip('/') + '/api/tags', timeout=5, context=_ctx()) as r:
+        ms = json.loads(r.read().decode()).get('models') or []
+    # ponytail: 계열 이름으로 임베딩 모델을 거른다 — 틀리면 /api/show 의 capabilities 로
+    return [{'name': m['name'], 'cloud': bool(m.get('remote_host'))} for m in ms
+            if (m.get('details') or {}).get('family') not in ('bert', 'nomic-bert') and 'embed' not in m['name']]
+
+
+def ollama_status(url, model, force=False):
+    """{'ready', 'detail'} — 서버가 답하고 고른 모델이 있는지(30초 캐시)."""
+    k = (url, model)
+    if not force and k in _ol and time.time() - _ol[k][0] < 30:
+        return _ol[k][1]
+    try:
+        ms = {m['name']: m['cloud'] for m in ollama_models(url)}
+        name = model if model in ms else f'{model}:latest'
+        if not model:
+            v = {'ready': False, 'detail': '모델을 고르세요 (⚙ 설정)'}
+        elif name not in ms:
+            v = {'ready': False, 'detail': f'서버에 없는 모델: {model}'}
+        else:
+            v = {'ready': True, 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 문서가 PC 밖(ollama.com)으로 나갑니다' if ms[name] else '')}
+    except Exception as e:
+        v = {'ready': False, 'detail': f'Ollama 서버에 연결할 수 없습니다 ({url}) — {str(e)[:80]}'}
+    _ol[k] = (time.time(), v)
+    return v
+
+
+def _call_ollama(system, user, cfg, json_mode=False):
+    need = len(system) + len(user) + 4096              # 한글 1자 ≈ 토큰 1개 + 답 자리 — 문맥이 모자라면 Ollama가 앞(지침)을 잘라 버린다
+    num_ctx = 8192
+    while num_ctx < min(need, 32768):
+        num_ctx *= 2
+    body = {'model': cfg['model'], 'stream': False, 'think': False, 'options': {'num_ctx': num_ctx},
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+    if json_mode:
+        body['format'] = 'json'
+
+    def post(b):
+        req = urllib.request.Request(cfg['url'].rstrip('/') + '/api/chat', data=json.dumps(b).encode(), headers={'content-type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=600, context=_ctx()) as r:
+            return json.loads(r.read().decode())
+    try:
+        d = post(body)
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode(errors='ignore')[:200]
+        if 'think' not in msg:
+            raise RuntimeError(f'Ollama HTTP {e.code}: {msg}')
+        body.pop('think')                              # 생각 끄기를 받지 않는 모델(gpt-oss 등)은 그대로 부른다
+        d = post(body)
+    text = re.sub(r'<think>.*?</think>', '', (d.get('message') or {}).get('content') or '', flags=re.S).strip()
+    if not text:
+        raise RuntimeError('Ollama: 빈 응답')
     return text
 
 
@@ -266,15 +343,18 @@ def display():
 
 import threading
 _fast = threading.local()
-_prov = threading.local()          # ctx['provider'] — 'bizcoder' 면 이 호출은 BizCoder(사내 LLM)로
+_prov = threading.local()          # ctx['provider'] · ctx['cfg'] — 'bizcoder' · 'ollama' 면 이 호출은 그 사내 LLM으로
 
 
-def call(system, user, max_tokens=2500, fast=False):
+def call(system, user, max_tokens=2500, fast=False, json_mode=False):
     """모델 한 번 호출 → (텍스트, ms). 실패하면 예외. fast=True(또는 ctx['fast'])면 가벼운 일용 빠른 모델."""
     fast = fast or getattr(_fast, 'on', False)
     t0 = time.time()
-    if getattr(_prov, 'name', '') == 'bizcoder':
-        return _call_bizcoder(system, user), int((time.time() - t0) * 1000)
+    p, pcfg = getattr(_prov, 'name', ''), getattr(_prov, 'cfg', None) or {}
+    if p == 'bizcoder':
+        return _call_bizcoder(system, user, pcfg.get('model')), int((time.time() - t0) * 1000)
+    if p == 'ollama':
+        return _call_ollama(system, user, pcfg, json_mode), int((time.time() - t0) * 1000)
     model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
     if CFG['llm_kind'] == 'claude_cli':
         return _call_cli(system, user, model), int((time.time() - t0) * 1000)
@@ -297,7 +377,7 @@ def call(system, user, max_tokens=2500, fast=False):
 
 
 def call_json(system, user, max_tokens=2500, fast=False):
-    text, ms = call(system + '\n\n반드시 JSON 하나만 출력한다. 설명·코드블록 표시 없이.', user, max_tokens, fast)
+    text, ms = call(system + '\n\n반드시 JSON 하나만 출력한다. 설명·코드블록 표시 없이.', user, max_tokens, fast, json_mode=True)
     a, b = text.find('{'), text.rfind('}')
     if a < 0 or b < 0:
         raise RuntimeError('JSON 응답 없음')
@@ -318,23 +398,25 @@ def ping():
 def _try(ctx, fn_llm, fn_rule):
     ctx = ctx or {}
     mk = ctx.get('mk')
-    biz = ctx.get('provider') == 'bizcoder'
+    prov, pcfg = ctx.get('provider') or '', ctx.get('cfg') or {}
     meta = {'mode': 'rule', 'model': '규칙 기반', 'label': '규칙 기반(보조)', 'ms': 0, 'masked': 0}
-    if ctx.get('use_llm', True) and (bizcoder_status()['ready'] if biz else available()):
+    # Ollama는 미리 묻지 않고 바로 부른다(꺼져 있으면 곧바로 연결 오류 → 규칙 기반으로)
+    if ctx.get('use_llm', True) and (bizcoder_status()['ready'] if prov == 'bizcoder' else prov == 'ollama' or available()):
         try:
             _fast.on = bool(ctx.get('fast'))
-            _prov.name = 'bizcoder' if biz else ''
+            _prov.name, _prov.cfg = prov, pcfg
             out, ms = fn_llm(mk.mask if mk else (lambda x: x))
             if mk:
                 out = mk.unmask(out)
-            return out, {'mode': 'llm', 'model': CFG['bizcoder_model'] if biz else CFG['llm_model'], 'label': ctx.get('label') or display(),
+            model = pcfg.get('model') or (CFG['bizcoder_model'] if prov == 'bizcoder' else CFG['llm_model'])
+            return out, {'mode': 'llm', 'model': model, 'label': ctx.get('label') or display(),
                          'ms': ms, 'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
         except Exception as e:
             meta['error'] = str(e)[:200]
         finally:
             _fast.on = False
-            _prov.name = ''
-    elif biz:
+            _prov.name, _prov.cfg = '', None
+    elif prov == 'bizcoder':
         meta['error'] = bizcoder_status()['detail']
     t0 = time.time()
     out = fn_rule()
