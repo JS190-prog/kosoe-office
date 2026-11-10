@@ -61,6 +61,16 @@ if llm2:
     expect('표에 행이 늘어남', len(tb2['rows']) == len(tb['rows']) + 1, str(tb2['rows']))
 expect('칸 이름 · 장 · 표 열은 그대로', list(flat2) == list(flat) and tb2['cols'] == tb['cols'] and [s['heading'] for s in c2['blueprint']['sections']] == [s['heading'] for s in bp['sections']])
 
+# 화면의 [+ 행]: 빈 행을 넣고 저장해도 행이 남아 있어야 그 행에 값을 적을 수 있다(만들 때는 빈 행을 뺀다)
+import urllib.request  # noqa: E402
+bp3 = json.loads(json.dumps(c2['blueprint']))
+tb3 = next(s['table'] for s in bp3['sections'] if s['table'])
+tb3['rows'].append([''] * len(tb3['cols']))
+put = urllib.request.Request(f"{BASE}/api/compose/{c['id']}", data=json.dumps({'blueprint': bp3}).encode(), headers={'content-type': 'application/json'}, method='PUT')
+c3 = json.loads(op.open(put, timeout=60).read().decode())['compose']
+tb3s = next(s['table'] for s in c3['blueprint']['sections'] if s['table'])
+expect('[+ 행]으로 넣은 빈 행이 저장 뒤에도 남음', len(tb3s['rows']) == len(tb2['rows']) + 1 and not any(tb3s['rows'][-1]), str(tb3s['rows'][-1]))
+
 t0 = time.time()
 d = call(f"/api/compose/{c['id']}/generate", {'fmts': ['hwp', 'ppt', 'web', 'xlsx']})
 res = d['results']
@@ -91,6 +101,8 @@ if llm2:
 from openpyxl import load_workbook  # noqa: E402
 ws = load_workbook(path).active
 expect('직인은 넣지 않음(그림은 회사 로고 하나)', len(ws._images) == 1, f'그림 {len(ws._images)}개')
+n_rows = len(tb2['rows'])
+expect('빈 행은 파일에 들어가지 않음(합계가 마지막 이용료 행 바로 아래)', ws.cell(16 + n_rows, 2).value == '합계', f"B{16 + n_rows}={ws.cell(16 + n_rows, 2).value!r}")
 
 print('\n' + ('모두 통과' if not fails else f'실패 {len(fails)}건: ' + ', '.join(fails)))
 print('DOC', doc['id'], path)
