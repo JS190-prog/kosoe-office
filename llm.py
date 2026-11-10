@@ -435,7 +435,13 @@ def _clean_bp(bp, outline):
         else:
             tb = None
         secs.append({'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb})
-    return {'title': _plain(bp.get('title')) or '문서', 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+    return {'title': _title(bp.get('title')), 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+
+
+def _title(v):
+    """제목은 한 줄. AI가 표지 글 전체(여러 줄)를 제목에 넣으면 첫 줄만 쓴다 — 제목 칸·문서함·받기 파일 이름에 쓰이는 값이다."""
+    first = next((l.strip() for l in re.split(r'[\r\n]+', _plain(v)) if l.strip()), '')
+    return re.sub(r'\s+', ' ', first)[:80] or '문서'
 
 
 def _attach_text(files, M):

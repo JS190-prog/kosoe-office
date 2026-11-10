@@ -718,8 +718,15 @@ def doc_file(did):
     ext = os.path.splitext(f['path'])[1]
     if not inline:
         log(g.u['name'], f"다운로드 — {d['title']} v{ver}{ext}")
-    safe = re.sub(r'[\\/:*?"<>|]', '_', d['title'])
-    return send_file(f['path'], as_attachment=not inline, download_name=f'{safe}_v{ver}{ext}')
+    return send_file(f['path'], as_attachment=not inline, download_name=f"{_file_stem(d['title'])}_v{ver}{ext}")
+
+
+def _file_stem(title):
+    """문서 제목 → 받기 파일 이름. 줄바꿈·제어문자가 있으면 HTTP 헤더에 못 넣어 500이 나므로 첫 줄만, 파일 이름에 못 쓰는 글자는 바꾼다."""
+    first = next((l.strip() for l in re.split(r'[\r\n]+', str(title or '')) if l.strip()), '')
+    s = re.sub(r'[\x00-\x1f\x7f]', ' ', first)
+    s = re.sub(r'[\\/:*?"<>|]', '_', s)
+    return re.sub(r'\s+', ' ', s).strip(' .')[:80] or '문서'
 
 
 @app.get('/api/docs/<did>/shot/<int:ver>/<name>')

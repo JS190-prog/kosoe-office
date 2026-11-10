@@ -82,6 +82,7 @@ def unit():
     expect('문체 없으면 코스콤 보고 문법', llm.writing_rules(None) == llm.WRITING_RULES)
     r = llm.writing_rules(st)
     expect('계약서 문체 규칙에 서술형 · 2026.10.28', '서술형 평서문' in r and "'2026.10.28'" in r and '명사형 종결' not in r)
+    expect('제목은 한 줄(표지 글 여러 줄이 와도 첫 줄만 — 받기 파일 이름·헤더에 쓰임)', llm._title('계약서\n([추가 업무명])\n코쇠금융IT') == '계약서' and llm._title('') == '문서')
     expect('style 값 검사', checks.validate_style({'ending': 'x'}) and not checks.validate_style({'ending': 'plain', 'date': 'Y.MM.DD', 'max_len': 0}))
 
 
