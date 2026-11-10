@@ -54,10 +54,11 @@ for i, (a, b, kind, lab) in enumerate(segs):
     d = b - a
     if kind == 'wait' and d > WAIT:
         sp = d / WAIT
-        txt = f'▶▶ 빨리 감기 ×{sp:.0f}  ·  {lab} 실제 {d:.0f}초'.replace(':', '\\:').replace("'", '')
+        spt = f'{sp:.0f}' if sp >= 10 else f'{sp:.1f}'   # 짧은 대기(×1.4)가 「×1」로 보이지 않게
+        txt = f'▶▶ 빨리 감기 ×{spt}  ·  {lab} 실제 {d:.0f}초'.replace(':', '\\:').replace("'", '')
         f = (f"[0:v]trim={a:.3f}:{b:.3f},setpts=(PTS-STARTPTS)/{sp:.4f},"
-             f"drawbox=x=iw-560:y=70:w=540:h=52:color=0xee6d1d@0.92:t=fill,"
-             f"drawtext=fontfile='{FONT}':text='{txt}':fontcolor=white:fontsize=24:x=w-548:y=83,format=yuv420p,setsar=1[v{i}]")
+             f"drawtext=fontfile='{FONT}':text='{txt}':fontcolor=white:fontsize=24:x=w-tw-32:y=83:"   # 상자가 글자 길이를 따라간다(긴 라벨이 화면 밖으로 잘리지 않게)
+             f"box=1:boxcolor=0xee6d1d@0.92:boxborderw=14,format=yuv420p,setsar=1[v{i}]")
         total += WAIT
     else:
         f = f"[0:v]trim={a:.3f}:{b:.3f},setpts=(PTS-STARTPTS)/{ACT:.4f},format=yuv420p,setsar=1[v{i}]"
