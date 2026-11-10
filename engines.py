@@ -71,18 +71,25 @@ def hwp_kind(template):
     return 'form' if p.startswith('form:') else p if p in ('detail', 'draft') else 'summary'
 
 
+def _sub(text, kind):
+    """항목 하나: 「* 」로 시작하면 각주(note), 「※ 」면 참고(ref), 그 밖은 kind(ㅇ 또는 -)."""
+    m = re.match(r'\s*([*※])\s*', text)
+    return {'type': 'note' if m.group(1) == '*' else 'ref', 'text': text[m.end():]} if m else {'type': kind, 'text': text}
+
+
 def _hwp_items(s, table_style=2):
-    """설계도의 장 하나 → 렌더러 항목(표를 먼저, 그다음 ㅇ 항목과 하위 -)."""
+    """설계도의 장 하나 → 렌더러 항목(표를 먼저, 그다음 ㅇ 항목과 하위 -, 각주 *, 참고 ※)."""
     items = []
     if s.get('table'):
         t = s['table']
-        items.append({'type': 'table', **({'style': table_style} if table_style else {}), 'rows': [t['cols']] + t['rows']})
+        items.append({'type': 'table', **({'style': table_style} if table_style else {}), **({'unit': t['unit']} if t.get('unit') else {}),
+                      'rows': [t['cols']] + t['rows']})
     for it in s['items']:
-        o = {'type': 'o', 'text': it['text']}
-        if it.get('label'):
+        o = _sub(it['text'], 'o')
+        if it.get('label') and o['type'] == 'o':
             o['label'] = it['label']
         if it.get('children'):
-            o['children'] = [{'type': 'dash', 'text': c['text']} for c in it['children']]
+            o['children'] = [_sub(c['text'], 'dash') for c in it['children']]
         items.append(o)
     return items
 
@@ -136,21 +143,28 @@ def to_detail(bp, people):
 
 
 def draft_purpose(title):
-    """기안 제목 → 「아래와 같이 ○○을/를 추진하고자」의 ○○ (끝의 (안)·건·추진을 뗀다)."""
+    """기안 제목 → 「아래와 같이 ○○을/를 추진하고자」의 ○○ (끝의 (안)·건·「추진 및 계약 체결 의뢰」·추진을 뗀다)."""
     t = re.sub(r'\s*\(안\)$', '', title.strip())
     t = re.sub(r'(\s+|의\s*)건$', '', t)
+    t = re.sub(r'\s*(추진\s*및\s*)?(계약\s*(체결\s*)?|구매\s*)?의뢰$', '', t)
     return re.sub(r'\s+추진$', '', t).strip() or title
 
 
 def to_draft(bp):
-    """기안문 본문: 「…근거」 장의 항목 → 관련 근거, 제목 → 추진하는 일, 나머지 장 → 「아래」 번호 항목."""
+    """기안문: 「…근거」 장의 항목 → 관련 근거, 나머지 장 → 「아래」 번호 항목(장 제목 줄 text · 표 단위 포함).
+    머리 수신자 · 제목과 첨부 목록도 넘긴다. 요청 문장의 추진하는 일은 설계도의 purpose(없으면 제목에서 꼬리를 뗀 것)."""
     basis, secs = [], []
     for s in bp['sections']:
         if '근거' in s['heading']:
             basis += [it['text'] for it in s['items'] if it['text'].strip() and '확인 필요' not in it['text']]
         else:
-            secs.append({'heading': s['heading'], 'items': _hwp_items(s, None) or [{'type': 'o', 'text': '(내용 없음)'}]})
-    return {'type': 'draft', 'basis': basis, 'purpose': draft_purpose(bp['title']), 'sections': secs}
+            secs.append({'heading': s['heading'], **({'text': s['text']} if s.get('text') else {}),
+                         'items': _hwp_items(s, None) or [{'type': 'o', 'text': '(내용 없음)'}]})
+    rep = {'type': 'draft', 'title': bp['title'], 'basis': basis, 'purpose': bp.get('purpose') or draft_purpose(bp['title']), 'sections': secs}
+    for k in ('recipient', 'attachments'):
+        if bp.get(k):
+            rep[k] = bp[k]
+    return rep
 
 
 def form_fields(path):
@@ -716,6 +730,22 @@ if __name__ == '__main__':           # 자체검사(전사 스킬 없이): 신�
     d = to_draft(bp)
     assert d['basis'] == ['총무2026-1(2026. 1. 2. : 보고)'] and d['purpose'] == 'X'
     assert d['sections'][0]['items'][0] == {'type': 'table', 'rows': [['c'], ['1']]}
+    assert 'recipient' not in d and d['title'] == 'X 추진'
+    # 기안문 작성사례: 머리 수신자 · 제목, 요청 문장의 일(purpose), 첨부 목록, 장 제목 줄 · 표 단위, 각주 * · 참고 ※
+    assert draft_purpose('코스콤 대학생 아이디어 페스티벌 추진 및 계약 체결 의뢰') == '코스콤 대학생 아이디어 페스티벌'
+    bp2 = {'title': '대학생 아이디어 페스티벌 추진 및 계약 체결 의뢰', 'recipient': '경영지원부장', 'purpose': '대학생 아이디어 페스티벌',
+           'attachments': ['추진 방안 1부', '견적서 1부'], 'sections': [
+               {'heading': '예산 현황', 'text': '소요 예산 신규 배정(계정과목 : 광고선전비)', 'items': [],
+                'table': {'cols': ['배정부서', '금액'], 'rows': [['경영기획부', '1,000']], 'unit': '(단위 : 원, 부가세 별도)'}},
+               {'heading': '기타 사항', 'items': [{'label': '', 'text': '기본계획과 집행품의를 단일 건으로 처리',
+                                               'children': [{'text': '* 관련 근거 : 규정'}, {'text': '※ 참고'}, {'text': '세부'}]}]}]}
+    d2 = to_draft(bp2)
+    assert (d2['recipient'], d2['title'], d2['purpose'], d2['attachments']) == \
+        ('경영지원부장', bp2['title'], '대학생 아이디어 페스티벌', ['추진 방안 1부', '견적서 1부'])
+    assert d2['sections'][0]['text'] == '소요 예산 신규 배정(계정과목 : 광고선전비)' and d2['sections'][0]['items'] == \
+        [{'type': 'table', 'unit': '(단위 : 원, 부가세 별도)', 'rows': [['배정부서', '금액'], ['경영기획부', '1,000']]}]
+    assert d2['sections'][1]['items'][0]['children'] == \
+        [{'type': 'note', 'text': '관련 근거 : 규정'}, {'type': 'ref', 'text': '참고'}, {'type': 'dash', 'text': '세부'}]
     det = to_detail({**bp, 'sections': bp['sections'][1:] + [{'heading': '효과', 'items': [{'label': '가', 'text': '1'}, {'label': '나', 'text': '2'}]}]},
                     {'dept': '팀'})
     assert det['chapters'][0]['sections'][0]['style'] == 'box' and det['chapters'][0]['sections'][0]['heading'] == '배경 : a'
