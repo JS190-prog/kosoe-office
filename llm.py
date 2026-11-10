@@ -51,6 +51,15 @@ def writing_rules(style=None):
 
 
 BP_SCHEMA = '{"title": str, "sections": [{"heading": str, "items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]]} | null}]}'
+# 기안문(preset draft): 한글 스킬 기안문 렌더러의 머리(수신자 · 제목) · 요청 문장 · 첨부 목록과 장 제목 줄 · 표 단위를 더 받는다
+DRAFT_KEYS = ('recipient', 'purpose', 'attachments')
+BP_SCHEMA_DRAFT = ('{"recipient": str, "title": str, "purpose": str, "attachments": [str], "sections": [{"heading": str, "text": str, '
+                   '"items": [{"label": str, "text": str, "children": [{"text": str}]}], "table": {"cols": [str], "rows": [[str]], "unit": str} | null}]}')
+DRAFT_GUIDE = ('\n기안문 칸: recipient = 수신자(예: 경영지원부장, 내부결재). title = 결재받을 일(예: ○○ 추진 및 계약 체결 의뢰). '
+               'purpose = 요청 문장 「아래와 같이 ○○을 추진하고자 하오니」의 ○○ — 제목에서 「추진 및 계약 체결 의뢰」 같은 꼬리를 뺀 일. '
+               'attachments = 첨부 문서 목록(「문서명 1부」 꼴, 요청 · 첨부 자료에 있는 것만, 없으면 []). '
+               '장의 text = 장 제목 줄에 「제목 : 내용」으로 붙일 한 줄(필요할 때만, 없으면 ""). 표의 unit = 표 위 단위(예: (단위 : 원, 부가세 별도), 없으면 ""). '
+               '하위 항목 중 각주는 text를 「* 」로, 참고는 「※ 」로 시작한다.')
 
 MASK_RX = {
     '주민등록번호': re.compile(r'\d{6}-[1-4]\d{6}'),
@@ -664,11 +673,22 @@ def _clean_bp(bp, outline):
                           'children': [{'text': _plain(c.get('text') if isinstance(c, dict) else c)} for c in (it.get('children') or [])][:3]})
         tb = s.get('table')
         if tb and tb.get('cols') and tb.get('rows'):
-            tb = {'cols': [_plain(c) for c in tb['cols']], 'rows': [[_plain(c) for c in r] for r in tb['rows']][:12]}
+            tb = {'cols': [_plain(c) for c in tb['cols']], 'rows': [[_plain(c) for c in r] for r in tb['rows']][:12],
+                  **({'unit': _plain(tb['unit'])} if _plain(tb.get('unit')) else {})}
         else:
             tb = None
-        secs.append({'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb})
-    return {'title': _title(bp.get('title')), 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+        sec = {'heading': _plain(s.get('heading')) or '장', 'items': items, 'table': tb}
+        if _plain(s.get('text')):                   # 기안문: 장 제목 줄에 붙이는 한 줄
+            sec['text'] = _plain(s['text'])
+        secs.append(sec)
+    out = {'title': _title(bp.get('title')), 'sections': secs or [{'heading': h, 'items': [], 'table': None} for h in outline]}
+    for k in ('recipient', 'purpose'):              # 기안문 머리 수신자 · 요청 문장의 추진하는 일
+        if _plain(bp.get(k)):
+            out[k] = _title(bp[k])
+    atts = [_plain(a) for a in (bp.get('attachments') or []) if isinstance(a, str) and _plain(a)]
+    if atts:                                        # 기안문 첨부 목록
+        out['attachments'] = atts[:15]
+    return out
 
 
 def _title(v):
@@ -788,11 +808,13 @@ def blueprint(template, request_text, files, ctx=None):
     def llm(M):
         fx = '\n'.join(f"- [{f.get('heading')}] {f['text']}" for f in fixed) or '(없음)'
         rules = template.get('rules') or ''
+        draft = template.get('preset') == 'draft'
         sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 템플릿 구성을 지켜 문서 설계도를 JSON으로 만든다.\n{writing_rules(template.get("style"))}\n{rules}'
         user = (f"템플릿: {template['name']} ({template['desc']})\n구성(이 순서와 제목을 그대로): {outline}\n"
                 f"고정 문구(글자 그대로 넣는다. 그 안에 숫자로 끝나지 않는 [칸 이름]이 있으면 그 칸만 요청·자료의 값으로 바꾸고, 값이 없으면 [칸 이름]을 그대로 둔다):\n{fx}\n\n"
                 f"요청: {M(request_text)}\n\n{_attach_text(files, M)}\n\n"
-                f"첨부에 표가 있으면 가장 맞는 장의 table에 그대로 넣는다(숫자 변경 금지, 필요하면 증감 열만 추가).\n출력 형식: {BP_SCHEMA}")
+                f"첨부에 표가 있으면 가장 맞는 장의 table에 그대로 넣는다(숫자 변경 금지, 필요하면 증감 열만 추가).\n"
+                f"출력 형식: {BP_SCHEMA_DRAFT if draft else BP_SCHEMA}" + (DRAFT_GUIDE if draft else ''))
         out, ms = call_json(sys, user, 3000)
         return _clean_bp(out, outline), ms
     return _try(ctx, llm, rule)
@@ -828,10 +850,15 @@ def edit(bp, instruction, files, ctx=None, style=None, extra=''):
 
     def llm(M):
         sys = f'너는 코쇠오피스(코스콤 사내 문서 작성 도우미)다. 사용자의 지시대로 설계도를 고친다. 지시와 관계없는 부분은 그대로 둔다.\n{writing_rules(style)}' + (f'\n{extra}' if extra else '')
+        draft = any(k in bp for k in DRAFT_KEYS)
         user = (f'현재 설계도:\n{M(json.dumps(bp, ensure_ascii=False))}\n\n지시: {M(instruction)}\n\n{_attach_text(files, M)}\n\n'
-                f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA}}}')
+                f'출력 형식: {{"reply": "무엇을 바꿨는지 한두 문장(존댓말)", "blueprint": {BP_SCHEMA_DRAFT if draft else BP_SCHEMA}}}')
         out, ms = call_json(sys, user, 3500)
-        return {'reply': str(out.get('reply') or '반영했습니다.'), 'blueprint': _clean_bp(out.get('blueprint') or bp, [])}, ms
+        nb = _clean_bp(out.get('blueprint') or bp, [])
+        for k in DRAFT_KEYS:                        # 기안문 머리 · 첨부를 AI가 빠뜨려도 지시와 관계없으면 그대로 둔다
+            if k in bp and k not in nb:
+                nb[k] = bp[k]
+        return {'reply': str(out.get('reply') or '반영했습니다.'), 'blueprint': nb}, ms
     return _try(ctx, llm, rule)
 
 
@@ -961,4 +988,12 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
         return {'items': [('가' * 96 if i == 0 else '나' * 80) if lim == 90 else '라' * 95 if lim == 67 else '다' * 50 for i in range(len(xs))]}, 10
     out, meta = shorten(['x' * 120, 'y' * 130], {'use_llm': True})
     assert meta['mode'] == 'llm' and asks == [(90, 2), (67, 1), (54, 1)] and out == ['다' * 50, '나' * 80], (asks, out)
+    # 기안문 설계도: 머리 · 요청 문장의 일 · 첨부 목록, 장 제목 줄 · 표 단위가 정리 뒤에도 남고, 없으면 키를 만들지 않는다
+    c = _clean_bp({'title': 'T 추진 및 계약 체결 의뢰', 'recipient': '경영지원부장', 'purpose': '**T**', 'attachments': ['A 1부', '', 3],
+                   'sections': [{'heading': '예산 현황', 'text': '소요 예산 신규 배정', 'items': [],
+                                 'table': {'cols': ['a'], 'rows': [['1']], 'unit': '(단위 : 원)'}}]}, [])
+    assert (c['recipient'], c['purpose'], c['attachments']) == ('경영지원부장', 'T', ['A 1부'])
+    assert c['sections'][0]['text'] == '소요 예산 신규 배정' and c['sections'][0]['table']['unit'] == '(단위 : 원)'
+    c = _clean_bp({'title': 'T', 'sections': [{'heading': 'h', 'items': [], 'table': {'cols': ['a'], 'rows': [['1']]}}]}, [])
+    assert set(c) == {'title', 'sections'} and set(c['sections'][0]) == {'heading', 'items', 'table'} and 'unit' not in c['sections'][0]['table']
     print('llm selftest OK')
