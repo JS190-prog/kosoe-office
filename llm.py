@@ -153,7 +153,7 @@ def _call_cli(system, user, model=None):
     exe = cli_path()
     if not exe:
         raise RuntimeError('Claude CLI 없음')
-    args = [exe, '-p', '--output-format', 'json', '--model', model or CFG['llm_model'], '--system-prompt', system,
+    args = [exe, '-p', '--output-format', 'json', '--model', model or CFG['cli_model'], '--system-prompt', system,
             '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence']
     if CFG.get('llm_effort'):
         args += ['--effort', CFG['llm_effort']]
@@ -174,49 +174,151 @@ def _call_cli(system, user, model=None):
     return d.get('result') or ''
 
 
+# ───────────── 제공자(provider) — 실행 중에 화면에서 바꿀 수 있다 ─────────────
+# claude_cli : 각자의 Claude Code 구독 CLI (기본)
+# openrouter : OpenRouter API(OpenAI 호환) — 사내에 올릴 오픈 모델(DeepSeek 등)을 노트북 시연에서 대신 부르는 용도
+# anthropic / openai_compat : API 키 · 사내 모델 엔드포인트      rule : AI 없이 규칙 기반만
+import threading
+_fast = threading.local()
+_active = {'kind': CFG['llm_kind'], 'or_model': CFG['or_model']}
+OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
+KIND_NAME = {'claude_cli': 'Claude Code CLI (구독)', 'openrouter': 'OpenRouter API', 'anthropic': 'Claude API', 'openai_compat': 'OpenAI 호환(사내 모델)',
+             'rule': '규칙 기반(AI 없음)'}
+
+
+def provider():
+    return _active['kind']
+
+
+def set_provider(kind, or_model=''):
+    if kind not in KIND_NAME:
+        raise ValueError('없는 AI 제공자: ' + str(kind))
+    if kind == 'openrouter':
+        if or_model and or_model not in CFG['or_models']:
+            raise ValueError(f'목록에 없는 모델: {or_model} — .env의 KOSOE_OPENROUTER_MODELS에 추가하세요')
+        if or_model:
+            _active['or_model'] = or_model
+    _active['kind'] = kind
+    return state()
+
+
+def model_name(fast=False):
+    k = provider()
+    if k == 'claude_cli':
+        return (CFG['cli_fast'] if fast else '') or CFG['cli_model']
+    if k == 'openrouter':
+        return _active['or_model']
+    if k == 'rule':
+        return '규칙 기반'
+    return (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
+
+
+def external():
+    """요청 내용이 제3자 API로 나가는 제공자인가(가림 처리 대상)."""
+    return provider() in ('openrouter',)
+
+
 def available():
-    if CFG['llm_kind'] == 'rule':
+    k = provider()
+    if k == 'rule':
         return False
-    if CFG['llm_kind'] == 'claude_cli':
+    if k == 'claude_cli':
         return cli_status()['ready']
+    if k == 'openrouter':
+        return bool(CFG['or_key'])
     return bool(CFG['llm_key'])
 
 
+def _short(m):
+    return m.split('/')[-1]
+
+
 def display():
-    if CFG['llm_kind'] == 'claude_cli':
-        return f"Claude {CFG['llm_model']} (구독 CLI)"
-    if CFG['llm_kind'] == 'rule':
+    k = provider()
+    if k == 'claude_cli':
+        return f"Claude {CFG['cli_model']} (구독 CLI)"
+    if k == 'openrouter':
+        return f"{_short(_active['or_model'])} (OpenRouter API)"
+    if k == 'rule':
         return '규칙 기반'
     return CFG['llm_model']
 
 
-import threading
-_fast = threading.local()
+def state():
+    """화면의 AI 선택 창에 보여 줄 제공자 목록과 현재 선택."""
+    cli = cli_status()
+    out = [{'kind': 'claude_cli', 'name': KIND_NAME['claude_cli'], 'ready': cli['ready'], 'model': CFG['cli_model'],
+            'detail': cli['detail'] if cli['ready'] else (cli['detail'] or '로그인 필요'), 'note': '각자 구독으로 로그인한 Claude Code CLI를 부릅니다.'},
+           {'kind': 'openrouter', 'name': KIND_NAME['openrouter'], 'ready': bool(CFG['or_key']), 'model': _active['or_model'], 'models': CFG['or_models'],
+            'detail': '키 있음' if CFG['or_key'] else '.env에 KOSOE_OPENROUTER_API_KEY 필요',
+            'note': '사내 GPU에 올릴 오픈 모델(DeepSeek 등)을 시연에서는 OpenRouter로 부릅니다. 요청 내용이 외부로 나가므로 가림 처리를 항상 적용하고, 가상 자료만 씁니다.'}]
+    if CFG['llm_key'] and CFG['llm_kind'] in ('anthropic', 'openai_compat'):
+        out.append({'kind': CFG['llm_kind'], 'name': KIND_NAME[CFG['llm_kind']], 'ready': True, 'model': CFG['llm_model'], 'detail': CFG['llm_base'], 'note': ''})
+    out.append({'kind': 'rule', 'name': KIND_NAME['rule'], 'ready': True, 'model': '', 'detail': '', 'note': 'AI 없이 규칙으로만 초안을 만듭니다(품질 낮음).'})
+    return {'kind': provider(), 'display': display(), 'connected': available(), 'providers': out}
+
+
+def _post(url, body, headers, timeout=150):
+    """JSON POST. 연결 끊김·429·5xx는 한 번 더 시도한다."""
+    last = ''
+    for attempt in range(2):
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_ctx()) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode(errors='ignore')[:300]
+            last = f'HTTP {e.code}: {msg}'
+            if e.code not in (429, 500, 502, 503, 504):
+                break
+        except Exception as e:            # 연결 재설정 등
+            last = str(e)[:200]
+        time.sleep(1.5)
+    raise RuntimeError(last)
 
 
 def call(system, user, max_tokens=2500, fast=False):
     """모델 한 번 호출 → (텍스트, ms). 실패하면 예외. fast=True(또는 ctx['fast'])면 가벼운 일용 빠른 모델."""
     fast = fast or getattr(_fast, 'on', False)
     t0 = time.time()
-    model = (CFG.get('llm_fast') if fast else '') or CFG['llm_model']
-    if CFG['llm_kind'] == 'claude_cli':
+    k = provider()
+    model = model_name(fast)
+    if k == 'claude_cli':
         return _call_cli(system, user, model), int((time.time() - t0) * 1000)
-    if CFG['llm_kind'] == 'openai_compat':
-        url = CFG['llm_base'] + '/v1/chat/completions'
-        body = {'model': model, 'max_tokens': max_tokens, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
-        headers = {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['llm_key']}
-    else:
-        url = CFG['llm_base'] + '/v1/messages'
-        body = {'model': model, 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]}
-        headers = {'content-type': 'application/json', 'x-api-key': CFG['llm_key'], 'anthropic-version': '2023-06-01'}
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=120, context=_ctx()) as r:
-            data = json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f'HTTP {e.code}: {e.read().decode(errors="ignore")[:200]}')
-    text = data['choices'][0]['message']['content'] if CFG['llm_kind'] == 'openai_compat' else ''.join(b.get('text', '') for b in data['content'])
-    return text, int((time.time() - t0) * 1000)
+    if k == 'openrouter':
+        body = {'model': model, 'max_tokens': max(max_tokens, 1200) + CFG['or_reason_budget'],     # 추론 토큰이 답 토큰을 잡아먹지 않게 여유
+                'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
+        if CFG['or_reasoning'] in ('low', 'medium', 'high'):
+            body['reasoning'] = {'effort': CFG['or_reasoning']}
+        elif CFG['or_reasoning'] == 'off':
+            body['reasoning'] = {'enabled': False}
+        data = _post(OPENROUTER_URL, body, {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['or_key'],
+                                            'x-title': 'kosoe-office'})
+        if data.get('error'):
+            raise RuntimeError(str(data['error'].get('message') or data['error'])[:200])
+        text = (data.get('choices') or [{}])[0].get('message', {}).get('content') or ''
+        if not text.strip():
+            raise RuntimeError('빈 응답(추론만 하고 답이 없음) — KOSOE_OPENROUTER_REASONING=off 또는 low 로 바꿔 보세요')
+        _usage.append({'model': model, 'cost': (data.get('usage') or {}).get('cost'), 'tokens': (data.get('usage') or {}).get('total_tokens')})
+        del _usage[:-200]
+        return text, int((time.time() - t0) * 1000)
+    if k == 'openai_compat':
+        data = _post(CFG['llm_base'] + '/v1/chat/completions',
+                     {'model': model, 'max_tokens': max_tokens, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]},
+                     {'content-type': 'application/json', 'authorization': 'Bearer ' + CFG['llm_key']})
+        return data['choices'][0]['message']['content'], int((time.time() - t0) * 1000)
+    data = _post(CFG['llm_base'] + '/v1/messages',
+                 {'model': model, 'max_tokens': max_tokens, 'system': system, 'messages': [{'role': 'user', 'content': user}]},
+                 {'content-type': 'application/json', 'x-api-key': CFG['llm_key'], 'anthropic-version': '2023-06-01'})
+    return ''.join(b.get('text', '') for b in data['content']), int((time.time() - t0) * 1000)
+
+
+_usage = []          # OpenRouter 호출별 비용(시연 중 확인용)
+
+
+def usage():
+    cost = sum(u['cost'] or 0 for u in _usage)
+    return {'calls': len(_usage), 'cost_usd': round(cost, 6)}
 
 
 def call_json(system, user, max_tokens=2500, fast=False):
@@ -230,10 +332,12 @@ def call_json(system, user, max_tokens=2500, fast=False):
 def ping():
     """키·네트워크 확인용 최소 호출."""
     if not available():
-        return {'ok': False, 'error': cli_status(True)['detail'] if CFG['llm_kind'] == 'claude_cli' else 'KOSOE_LLM_API_KEY 없음'}
+        k = provider()
+        return {'ok': False, 'error': cli_status(True)['detail'] if k == 'claude_cli' else '규칙 기반 설정' if k == 'rule' else
+                '.env에 KOSOE_OPENROUTER_API_KEY 없음' if k == 'openrouter' else 'KOSOE_LLM_API_KEY 없음'}
     try:
         t, ms = call('짧게 답한다.', '"ok" 한 단어만 출력', 10)
-        return {'ok': True, 'ms': ms, 'model': display()}
+        return {'ok': True, 'ms': ms, 'model': display(), 'reply': t.strip()[:40]}
     except Exception as e:
         return {'ok': False, 'error': str(e)[:200]}
 
@@ -248,7 +352,7 @@ def _try(ctx, fn_llm, fn_rule):
             out, ms = fn_llm(mk.mask if mk else (lambda x: x))
             if mk:
                 out = mk.unmask(out)
-            return out, {'mode': 'llm', 'model': CFG['llm_model'], 'label': ctx.get('label') or display(), 'ms': ms,
+            return out, {'mode': 'llm', 'model': model_name(bool(ctx.get('fast'))), 'kind': provider(), 'label': ctx.get('label') or display(), 'ms': ms,
                          'masked': len(mk.map) if mk else 0, 'tokens': dict(list(mk.map.items())[:6]) if mk else {}}
         except Exception as e:
             meta['error'] = str(e)[:200]

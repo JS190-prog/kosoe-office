@@ -96,20 +96,35 @@ def J(s, d=None):
 
 def ai_ctx(fast=False):
     """망 구분에 따른 AI 사용 방식. 인터넷망 = 외부 AI + 마스킹, 폐쇄망 = 사내 모델 자리(시연: 같은 구독 CLI 또는 규칙)."""
+    pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
     if g.net == 'internet':
-        pol = J(row(g.con, "select v from policy where k='mask'")['v'], [])
         return {'use_llm': True, 'label': f"{llm.display()} (인터넷망 · 마스킹)", 'mk': llm.Masker(pol), 'fast': fast}
     if CFG['closed_llm'] == 'rule':
         return {'use_llm': False}
+    if llm.external():
+        # 시연: 사내에 올릴 모델을 외부 API로 대신 부른다 → 요청이 밖으로 나가므로 망 모드와 관계없이 가린다
+        return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ' · 마스킹)', 'mk': llm.Masker(pol), 'fast': fast}
     return {'use_llm': True, 'label': '사내 LLM 자리 (시연: ' + llm.display() + ')', 'mk': None, 'fast': fast}
 
 
 def ai_state():
-    if CFG['llm_kind'] == 'claude_cli':
-        st = llm.cli_status()
-        return {'connected': st['ready'], 'model': llm.display(), 'kind': 'claude_cli', 'closed': CFG['closed_llm'], 'detail': st['detail']}
-    return {'connected': llm.available(), 'model': llm.display(), 'kind': CFG['llm_kind'], 'closed': CFG['closed_llm'],
-            'detail': '' if llm.available() else 'KOSOE_LLM_API_KEY 없음'}
+    st = llm.state()
+    cur = next((p for p in st['providers'] if p['kind'] == st['kind']), {})
+    return {'connected': st['connected'], 'model': st['display'], 'kind': st['kind'], 'closed': CFG['closed_llm'],
+            'detail': cur.get('detail', ''), 'external': llm.external()}
+
+
+def load_ai_choice():
+    """이 PC에서 마지막으로 고른 AI 제공자를 되살린다(없으면 .env의 KOSOE_AI)."""
+    con = db()
+    r = row(con, "select v from policy where k='ai'")
+    con.close()
+    c = J(r['v'], {}) if r else {}
+    if c.get('kind'):
+        try:
+            llm.set_provider(c['kind'], c.get('or_model', ''))
+        except Exception:
+            pass
 
 
 def people_of(u):
@@ -315,10 +330,41 @@ def set_net():
     return ok()
 
 
+@app.get('/api/ai')
+@login_required
+def ai_get():
+    return ok(ai=llm.state(), usage=llm.usage(), closed=CFG['closed_llm'])
+
+
+@app.post('/api/ai')
+@login_required
+def ai_set():
+    """AI 제공자 바꾸기(이 PC 설정). 예: Claude Code CLI ↔ OpenRouter(DeepSeek)."""
+    b = request.json or {}
+    try:
+        st = llm.set_provider(b.get('kind'), b.get('or_model') or '')
+    except ValueError as e:
+        return err(str(e))
+    cur = next((p for p in st['providers'] if p['kind'] == st['kind']), {})
+    g.con.execute("insert into policy(k,v) values('ai',?) on conflict(k) do update set v=excluded.v",
+                  (json.dumps({'kind': st['kind'], 'or_model': cur.get('model', '')}, ensure_ascii=False),))
+    log(g.u['name'], f"AI 전환 → {st['display']}" + ('' if st['connected'] else ' (연결 안 됨 — 규칙 기반으로 동작)'))
+    return ok(ai=st)
+
+
+@app.post('/api/ai/ping')
+@login_required
+def ai_ping():
+    p = llm.ping()
+    if p.get('ok'):
+        log(g.u['name'], f"AI 연결 시험 — {p['model']} {p['ms']}ms")
+    return ok(ping=p, usage=llm.usage())
+
+
 @app.get('/api/health')
 def health():
     p = llm.ping() if request.args.get('ping') else {'ok': llm.available(), 'error': ai_state()['detail']}
-    return ok(ai=p, hwp=engines.hwp_ready(), repo=skills.STATE, model=llm.display(), kind=CFG['llm_kind'], corp=corp.status())
+    return ok(ai=p, hwp=engines.hwp_ready(), repo=skills.STATE, model=llm.display(), kind=llm.provider(), corp=corp.status())
 
 
 # ───────────── 양식 ─────────────
@@ -1423,6 +1469,7 @@ def sync():
 
 def boot():
     core.init_db()
+    load_ai_choice()
     sync_forms(force=True)
     threading.Thread(target=corp.warm, kwargs={'log': lambda m: None}, daemon=True).start()
 

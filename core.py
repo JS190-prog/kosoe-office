@@ -24,8 +24,8 @@ def load_env():
                 env[k.strip()] = v.strip().strip('"').strip("'")
     get = lambda k, d='': os.environ.get(k) or env.get(k) or d
     key = get('KOSOE_LLM_API_KEY')
-    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | anthropic | openai_compat | rule
-    kind = {'cli': 'claude_cli', 'openai': 'openai_compat'}.get(kind, kind)
+    kind = get('KOSOE_AI', 'claude_cli')          # claude_cli | openrouter | anthropic | openai_compat | rule
+    kind = {'cli': 'claude_cli', 'openai': 'openai_compat'}.get(kind, kind)           # + openrouter
     return {
         'home': os.path.expanduser(get('KOSOE_HOME', os.path.join('~', '.kosoe'))),
         'llm_kind': kind,
@@ -35,6 +35,13 @@ def load_env():
         'llm_effort': get('KOSOE_LLM_EFFORT', 'low' if kind == 'claude_cli' else ''),
         'llm_base': get('KOSOE_LLM_BASE_URL', 'https://api.anthropic.com').rstrip('/'),
         'claude_cli': get('KOSOE_CLAUDE_CLI'),
+        'cli_model': get('KOSOE_CLAUDE_MODEL', get('KOSOE_LLM_MODEL', 'sonnet') if kind == 'claude_cli' else 'sonnet'),
+        'cli_fast': get('KOSOE_CLAUDE_FAST_MODEL', get('KOSOE_LLM_FAST_MODEL', 'haiku') if kind == 'claude_cli' else 'haiku'),
+        'or_key': get('KOSOE_OPENROUTER_API_KEY'),
+        'or_models': [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash,nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-4-31b-it:free').split(',') if m.strip()],
+        'or_model': get('KOSOE_OPENROUTER_MODEL', '') or [m.strip() for m in get('KOSOE_OPENROUTER_MODELS', 'deepseek/deepseek-v4.1-flash').split(',')][0],
+        'or_reasoning': get('KOSOE_OPENROUTER_REASONING', 'low'),          # off | low | medium | high | default
+        'or_reason_budget': int(get('KOSOE_OPENROUTER_REASON_BUDGET', '3000')),
         'claude_token': get('KOSOE_CLAUDE_TOKEN'),
         'closed_llm': get('KOSOE_CLOSED_LLM', 'same'),
         'skills_repo': get('KOSOE_SKILLS_REPO', 'humanist96/kosoe-office-skills'),

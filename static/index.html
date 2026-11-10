@@ -190,6 +190,7 @@ pre.code{background:#0f1b33;color:#d6e2ff;padding:14px;border-radius:10px;font:1
 <script src="/static/chart.umd.min.js"></script>
 <script src="/static/views_skills.js"></script>
 <script src="/static/hwp_preview.js"></script>
+<script src="/static/ai_select.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -271,7 +272,7 @@ function renderTop() {
    </div>
    <span class="small muted">${inet ? `인터넷 승인 ~${inet.until}` : '인터넷망: 승인 필요'}</span>
    <span class="grow"></span>
-   <span class="chip ${ME.ai.connected ? 'n' : 'o'}" title="${esc(ME.ai.detail || 'AI 상태')}">${ME.ai.connected ? (ME.net === 'internet' ? '🤖 ' + esc(ME.ai.model) + ' · 마스킹' : '🤖 사내 LLM 자리 (시연: ' + esc(ME.ai.model) + ')') : '⚙️ 규칙 기반 보조 모드 — ' + esc(ME.ai.detail || '')}</span>
+   <button class="chip ${ME.ai.connected ? 'n' : 'o'}" style="cursor:pointer" onclick="aiModal()" title="눌러서 AI 바꾸기 (Claude Code CLI ↔ OpenRouter)">${aiChipText()} ▾</button>
    <span class="chip" title="스킬 저장소 ${esc(ME.repo.url || '')} ${esc(ME.repo.error || '')}" onclick="go('skills')" style="cursor:pointer">${ME.repo.mode === 'github' ? '🧩 스킬 저장소 ' + esc(ME.repo.head) : ME.repo.mode === 'local' ? '📁 로컬 스킬 저장소' : '… 스킬 저장소'}</span>
    <button class="row" onclick="logout()" title="사용자 바꾸기"><span class="av" style="width:32px;height:32px;background:${u.color};font-size:13px">${esc(u.name[0])}</span>
      <span style="text-align:left;line-height:1.25"><b>${esc(u.name)} ${esc(u.title)}</b><br><span class="small muted">${esc(u.team)} · ${esc(u.role_name)}</span></span></button>`;
