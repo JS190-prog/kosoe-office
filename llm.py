@@ -702,26 +702,40 @@ def _stem_key(s):
 DOCNO = re.compile(r'[가-힣]{1,8}\d{4}-\d{1,5}')     # 문서번호(예: 총무2026-0315, 기획2026-158)
 
 
-def _listed(f, stem, atts):
-    """업로드 파일이 첨부 목록에 이미 있나. 파일 이름의 낱말(_ · 띄어쓰기 · 기호로 나눈 것)이 한 줄에 모두 들어 있거나,
-    파일 이름 · 첫머리의 문서번호가 들어 있으면 같은 문서다(근거 공문은 「[문서번호] 문서 제목 (시행일) 1부」로 쓰므로)."""
-    words = [w for w in (_stem_key(x) for x in re.split(r'[\s_\-()\[\]]+', stem)) if w]
-    if any(all(w in _stem_key(a) for w in words) for a in atts):
-        return True
+def _same(f, stem, att):
+    """첨부 한 줄이 이 업로드 파일인가. 파일 이름의 낱말(_ · 띄어쓰기 · 기호로 나눈 것)이나 파일 첫 줄(문서 제목)의 낱말이
+    그 줄에 모두 들어 있거나, 파일 이름 · 첫머리의 문서번호가 들어 있으면 같은 문서다
+    (근거 문서는 「[문서번호] 문서 제목 (시행일) 1부」처럼 제목으로 쓰므로)."""
+    def words(s):
+        return [w for w in (_stem_key(x) for x in re.split(r'[\s_\-()\[\]]+', s)) if w]
+    first = next((ln.strip() for ln in (f.get('text') or '').splitlines() if ln.strip()), '')[:60]
+    title = words(re.sub(r'\([^)]*\)', '', first))            # 괄호 속 「가상」 등은 뺌
+    key = _stem_key(att)
+    for ws in (words(stem), title if len(title) >= 2 else []):
+        if ws and all(w in key for w in ws):
+            return True
     m = DOCNO.search(stem) or DOCNO.search((f.get('text') or '')[:200])
-    return bool(m) and any(m.group() in a for a in atts)
+    return bool(m) and m.group() in att
 
 
 def draft_post(bp, files):
     """기안문 설계도 마무리. 기안문 양식은 장 8개(추진 개요 ~ 기타 사항) 가운데 필요한 것만 쓰므로 내용 없는 장은 뺀다.
+    「1. 관련 근거」는 양식의 첫 항목이라 늘 둔다 — AI가 비우면 참고한 업로드 파일로, 파일도 없으면 「(확인 필요)」로 채운다.
     참고한 업로드 파일은 첨부 목록에 빠짐없이 넣는다(AI가 빠뜨린 파일은 파일 이름으로 뒤에 붙인다)."""
+    named = [(f, re.sub(r'\.\w{2,5}$', '', (f.get('name') or '').strip()).strip()) for f in files or []]
+    named = [(f, stem) for f, stem in named if stem]
     secs = [s for s in bp['sections'] if s['items'] or s.get('table') or s.get('text')]
-    out = {**bp, 'sections': secs or bp['sections'][:1]}
+    if not any('근거' in s['heading'] for s in secs):
+        secs.insert(0, {'heading': '관련 근거', 'table': None,
+                        'items': [{'label': '', 'text': re.sub(r'_+', ' ', stem), 'children': []} for _, stem in named]
+                        or [{'label': '', 'text': '(확인 필요)', 'children': []}]})
+    out = {**bp, 'sections': secs}
     atts = [re.sub(r'_+', ' ', a) for a in bp.get('attachments') or []]     # 파일 이름의 밑줄은 문서에서 띄어쓰기로
-    for f in files or []:
-        stem = re.sub(r'\.\w{2,5}$', '', (f.get('name') or '').strip()).strip()
-        if stem and not _listed(f, stem, atts):
+    for f, stem in named:                           # 파일마다 첨부 한 줄: 없으면 붙이고, 제목 · 파일 이름으로 두 번 적혔으면 앞의 것만
+        hit = [i for i, a in enumerate(atts) if _same(f, stem, a)]
+        if not hit:
             atts.append(re.sub(r'_+', ' ', stem) + ' 1부')
+        atts = [a for i, a in enumerate(atts) if i not in hit[1:]]
     if atts:
         out['attachments'] = atts[:15]
     return out
@@ -1039,9 +1053,21 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
         {'heading': '관련 근거', 'items': [], 'table': None}, {'heading': '추진 개요', 'items': [it], 'table': None},
         {'heading': '계약 사항', 'items': [], 'table': None}, {'heading': '소요 예산', 'items': [], 'table': None, 'text': '1,000원'}]},
         [{'name': '기획2026-1_계획.hwp'}, {'name': '시연메모_고객 세미나.txt'}, {'name': 'E증권(가상).pptx'}])
-    assert [s['heading'] for s in d['sections']] == ['추진 개요', '소요 예산']
+    assert [s['heading'] for s in d['sections']] == ['관련 근거', '추진 개요', '소요 예산']
+    assert [x['text'] for x in d['sections'][0]['items']] == ['기획2026-1 계획', '시연메모 고객 세미나', 'E증권(가상)']   # AI가 비운 관련 근거 → 참고 파일
     assert d['attachments'] == ['[기획2026-1] 기획2026-1 계획 (2026. 1. 2.) 1부', '시연메모 고객 세미나 1부', 'E증권(가상) 1부']
-    assert 'attachments' not in draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [], 'table': None}]}, [])
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}]}, [])
+    assert 'attachments' not in d and d['sections'][0]['items'][0]['text'] == '(확인 필요)'            # 파일도 없으면 채울 자리 표시
+    d = draft_post({'title': 'T', 'sections': [{'heading': '관련 근거', 'items': [dict(it, text='총무2026-1(2026. 1. 2. : 보고)')], 'table': None}]},
+                   [{'name': 'a.txt'}])
+    assert [x['text'] for x in d['sections'][0]['items']] == ['총무2026-1(2026. 1. 2. : 보고)']       # AI가 쓴 근거는 그대로
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}], 'attachments': ['2026 고객 세미나 준비 메모 1부']},
+                   [{'name': '시연메모_고객세미나.txt', 'text': '\n2026 고객 세미나 준비 메모 (가상)\n- 행사명: …'}, {'name': '영업제안_B증권.pptx', 'text': '사례'}])
+    assert d['attachments'] == ['2026 고객 세미나 준비 메모 1부', '영업제안 B증권 1부'], d['attachments']   # 메모를 제목으로 이미 적음
+    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
+                    'attachments': ['2026 고객 세미나 준비 메모 1부', '시연메모_고객세미나 1부', '견적서 1부']},
+                   [{'name': '시연메모_고객세미나.txt', 'text': '2026 고객 세미나 준비 메모 (가상)'}])
+    assert d['attachments'] == ['2026 고객 세미나 준비 메모 1부', '견적서 1부'], d['attachments']        # 같은 파일을 두 번 적었으면 앞의 것만
     d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}],
                     'attachments': ['[총무2026-0315] 회의실 화상회의 장비 교체 수요 조사 결과 (2026. 4. 10.) 1부']},
                    [{'name': '총무2026-0315_화상회의장비_수요조사결과.hwp'}, {'name': '화상회의장비_견적서.txt'}])
