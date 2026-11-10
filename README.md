@@ -281,6 +281,13 @@ koscom-hwp-pb-contract:                 # PB 전산서비스 추가업무 이용
 
 스킬 폴더에는 `form.yaml`(칸 정의) · `templates/*.hwp`(서식) · `scripts/*.jar`(`FillRenderer`)가 있으면 됩니다. 앱은 `fillform.py`로 칸 ↔ 설계도 ↔ `values.json`을 바꿔 주기만 하므로, 새 목적의 스킬을 올릴 때 앱 코드를 고치지 않습니다. 원격에 올리기 전에는 `.env`의 `KOSOE_CORP_LOCAL=<스킬 id>=<폴더>`로 이 PC의 저장소를 바로 씁니다.
 
+**엑셀도 같은 방식입니다 (`kind: xlsx-fill`).** 견적서처럼 엑셀로 주고받는 문서는 서식(.xlsx)의 칸에 값을 넣습니다. 잠금 파일에 `kind: xlsx-fill`로 올리면 「새 문서」에 **엑셀** 양식 카드로 보이고, 그 서식의 엑셀 파일만 만듭니다. 첫 스킬은 [`corp/koscom-xlsx-pb-quote`](https://github.com/humanist96/kosoe-office-skills/tree/main/corp/koscom-xlsx-pb-quote)(PB 전산서비스 추가업무 이용 견적서)이고, 계약서 스킬과 칸 이름이 같습니다.
+
+- 스킬 폴더: `form.yaml` · `templates/*.xlsx` · `scripts/render.py`. 앱은 고정된 커밋에서 서식과 `render.py`를 꺼내 `python render.py values.json 결과.xlsx --template 서식`으로 돌립니다(앱의 파이썬 · openpyxl · pillow).
+- 미리보기는 결과 파일의 인쇄 영역을 HTML 표로 옮겨 보여 줍니다(`xlsx_view.py`). 화면용 모양이라 정확한 모양은 「Excel로 열기」로 봅니다.
+- 직인 같은 그림 자리는 앱에서 채우지 않습니다. 견적서는 직인 자리가 빈 채로 나옵니다.
+- 칸 기본값에 `{today:YYYY년 MM월 DD일}`을 쓰면 말하지 않은 날짜 칸에 오늘 날짜가 들어갑니다.
+
 ### 스킬 상속
 
 ```mermaid
@@ -337,7 +344,8 @@ kosoe-office/
 ├─ ppt_chevron.py      PPT 어댑터 (셰브론 SVG → ppt-master)
 ├─ webslide.py         웹 어댑터 (koscom-webslide)
 ├─ checks.py           팩 규칙 검수 · 원본값 대조 · 고정 문구 보장
-├─ fillform.py         서식 채우기형 한글 스킬 — form.yaml(칸) ↔ 설계도 ↔ values.json · 칸 검수
+├─ fillform.py         서식 채우기형 스킬(한글 · 엑셀) — form.yaml(칸) ↔ 설계도 ↔ values.json · 칸 검수
+├─ xlsx_view.py        엑셀 미리보기 — 결과 .xlsx의 인쇄 영역을 HTML 표로
 ├─ extract.py          첨부 읽기 (xlsx · pptx · docx · pdf · hwp · html · csv · txt)
 ├─ doctor.py           설치 점검
 ├─ static/             화면 (index.html · views_skills.js · hwp_preview.js · ai_select.js · ai_ollama.js · 서체 · Chart.js)
@@ -356,6 +364,7 @@ kosoe-office/
 | 스킬 변경 → PR → 승인 → 반영 → 복구 | ✅ | 실제 GitHub PR로 확인 |
 | ★ 스킬 빌더 (분석 → 검증 → 등록) | ✅ | `tests/e2e_skillgen.py` — 스킬 사용 12/12, 미사용 3~6/12 |
 | 목적별 한글 스킬 (PB 추가업무 계약서, 서식 채우기형) | ✅ | `tests/e2e_fillform.py` — 잠금 파일에 고정된 커밋을 받아, 가상 요청으로 칸 초안(금액 단위 · 날짜 형식 맞춤, 주지 않은 값은 비움) → 채팅 수정 → 한글 생성 → 필수 칸 · 형식 · 표 검수. 결과를 한컴 뷰어와 앱 미리보기에서 원본 서식 모양으로 확인 |
+| 목적별 엑셀 스킬 (PB 추가업무 견적서, 서식 채우기형) | ✅ 이 PC 사본으로 | `tests/e2e_xlsxfill.py` — 가상 요청으로 칸 초안(금액 단위 맞춤, 말하지 않은 견적 일자는 오늘, 주지 않은 값은 비움) → 채팅 수정 → 엑셀 생성 → 필수 칸 · 형식 · 표 검수 → 미리보기 · 받기. 합계 자동, 안 준 담당자 줄 빠짐, 직인 없음. `KOSOE_CORP_LOCAL`로 이 PC의 스킬 사본에 대고 확인했고(2026-11-10), 잠금 파일에 올린 커밋으로는 올린 뒤에 다시 확인해야 합니다. 엑셀 2016에서 결과 파일 모양 확인 |
 | 보고서가 아닌 문서로 스킬 만들기 · 강제 등록 | ✅ | `tests/e2e_style.py` — 가상 계약서 1건: 문체를 서술형 · `2019.03.15` · 250자로 재고, 검증 사용 4/4 vs 미사용 0/4. 사람 확인 없이 강제 등록 → 사유 없으면 거절, 사유 있으면 PR · 병합 · `verification: forced` 기록. 대표 문서 3건(보고서) 경로는 그대로 12/12 |
 | 원본값 대조 · 재검사 | ✅ | `tests/e2e_inspect.py` — 불일치 1건 탐지, 수정본 0건 |
 | 3분 시연 8장면 | ✅ | `tests/record_demo.js`로 실제 화면 자동 진행 · 녹화 |
@@ -371,6 +380,7 @@ python tests/smoke_engines.py     # 스킬 저장소 동기화 → 상속 해석
 python tests/e2e_skillgen.py      # 스킬 빌더 끝까지 (앱 실행 중, seed 자료 필요)
 python tests/e2e_inspect.py       # 검수 · 재검사
 python tests/e2e_fillform.py      # 목적별 한글 스킬(계약서): 칸 초안 → 수정 → 생성 → 검수 (앱 실행 중)
+python tests/e2e_xlsxfill.py      # 목적별 엑셀 스킬(견적서): 칸 초안 → 수정 → 생성 → 검수 → 미리보기 (앱 실행 중)
 python tests/e2e_style.py         # 문서 기준 문체 · 고정 문구의 칸 (앱 없이). --app 을 붙이면 계약서 예시로 분석 → 검증
 python tests/e2e_provider.py nvidia       # AI를 바꿔 추천 → 초안 → 수정 → 세 형식 생성 (끝나면 되돌림). openrouter · --model 도 가능
 python tests/make_samples.py      # 새 문서 카드 샘플 그림 → 스킬 저장소 registry/samples/ (한글 · PowerPoint 필요)
