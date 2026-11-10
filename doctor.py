@@ -92,7 +92,7 @@ def main():
         fonts = [os.path.expanduser('~/Library/Fonts'), '/Library/Fonts', os.path.expanduser('~/.local/share/fonts'), '/usr/share/fonts']
         has = any('KoPub' in f for d in fonts if os.path.isdir(d) for f in os.listdir(d))
         say(True if has else None, 'KoPub돋움체 (PPT 글꼴)', '설치됨' if has else '없으면 PPT를 열 때 다른 글꼴로 보입니다 — 무료 KoPub돋움체 설치 권장')
-        say(None, '한글(.hwp) 열어 보기', 'macOS는 한컴오피스 Mac 또는 한컴독스(웹)로 확인 — 앱의 「미리보기」는 파일에서 읽은 문단을 보여 줌')
+        say(None, '한글(.hwp) 열어 보기', '앱의 「미리보기」가 실제 파일을 그려 보여 줌(rhwp). 최종 확인은 한컴오피스 Mac·한컴독스(웹)')
     py = 'python' if os.name == 'nt' else 'python3'
     print('\n' + (f'준비 완료 — {py} kosoe.py' if ok_all else '❌ 항목을 먼저 해결하세요'))
     return 0 if ok_all else 1

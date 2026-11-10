@@ -3,12 +3,14 @@
 실행: python app.py  →  http://localhost:8810
 """
 import json
+import mimetypes
 import os
 import re
 import secrets
 import unicodedata
 from shutil import which as shutil_which
 import subprocess
+import sys
 import threading
 import time
 from functools import wraps
@@ -35,6 +37,7 @@ def log(who, what):
 
 
 app = Flask(__name__, static_folder=None)
+mimetypes.add_type('application/wasm', '.wasm')      # rhwp(WASM) 스트리밍 초기화에 필요
 _sk = os.path.join(DATA, 'secret.key')
 if not os.path.exists(_sk):
     open(_sk, 'w').write(secrets.token_hex(32))
@@ -672,6 +675,44 @@ def doc_text(did):
         return err('한글 파일이 없습니다', 404)
     pua = re.compile('[-]')
     return ok(lines=[pua.sub('■', l) for l in engines.hwp_text(f['path'])])
+
+
+@app.get('/api/docs/<did>/report')
+@login_required
+def doc_report(did):
+    """한글 '모양 미리보기'용: 렌더러에 넘긴 보고서 구조(제목·결재란·장·항목·표). 그 버전의 것이 없으면 현재 설계도로 다시 만든다."""
+    d = _doc(did)
+    ver = int(request.args.get('ver') or d['ver'])
+    p = os.path.join(engines.job_dir(did, ver), 'report.json')
+    if os.path.exists(p):
+        return ok(report=json.load(open(p, encoding='utf-8')), exact=True)
+    t = row(g.con, 'select * from templates where id=?', d['template_id']) or {}
+    rep = engines.to_report(J(d['blueprint'], {'title': d['title'], 'sections': []}), t, people_of(core.get_user(g.con, d['owner'])))
+    return ok(report=rep, exact=ver == d['ver'])
+
+
+@app.post('/api/docs/<did>/launch')
+@login_required
+def doc_launch(did):
+    """결과 파일을 이 PC에 연결된 프로그램으로 연다(.hwp → 한컴 뷰어·한글, .pptx → PowerPoint·Keynote). 앱은 내 PC에서만 돈다."""
+    d = _doc(did)
+    b = request.json or {}
+    ver = int(b.get('ver') or d['ver'])
+    fmt = b.get('fmt') or d['fmt']
+    f = row(g.con, 'select * from doc_files where doc_id=? and ver=? and fmt=? order by created desc', did, ver, fmt)
+    if not f or not os.path.exists(f['path']):
+        return err('파일이 없습니다(사내 보호 도구가 이름을 바꿨을 수 있습니다). 「받기」로 내려받아 열어 주세요.', 404)
+    try:
+        if os.name == 'nt':
+            os.startfile(f['path'])                      # noqa: S606 — 앱이 만든 파일만, 로컬에서만
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', f['path']])
+        else:
+            subprocess.Popen(['xdg-open', f['path']])
+    except Exception as e:
+        return err(f'열 수 있는 프로그램을 찾지 못했습니다: {str(e)[:120]} — 「받기」로 내려받아 열어 주세요.', 500)
+    log(g.u['name'], f"프로그램으로 열기 — {d['title']} v{ver} ({FMT[fmt]})")
+    return ok()
 
 
 # ───────────── 검수만 하기 (사람이 쓴 문서 · 원본값 대조 · 재검사) ─────────────

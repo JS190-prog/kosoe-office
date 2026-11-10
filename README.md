@@ -68,7 +68,7 @@ AI가 초안을 써 줘도 **형식마다 다시 쓰기**(PPT·웹·한글), **�
 <td><img src="docs/images/06-web.png" alt="웹슬라이드"><br><b>웹슬라이드</b> — 전사 <code>koscom-webslide</code> 엔진. 차트 · 편집 모드가 든 단일 HTML</td>
 </tr>
 <tr>
-<td><img src="docs/images/04-hwp.png" alt="한글"><br><b>한글</b> — 전사 <code>koscom-hwp-report</code> 렌더러. 결재란 · □ㅇ- 단계 · 표</td>
+<td><img src="docs/images/04-hwp.png" alt="한글"><br><b>한글</b> — 전사 <code>koscom-hwp-report</code> 렌더러가 만든 실제 <code>.hwp</code>를 브라우저 안에서 그려 보여 줍니다</td>
 <td><img src="docs/images/07-inspect.png" alt="검수"><br><b>검수</b> — 원본 120만원 ≠ PPT 100만원. 읽지 못한 파일은 「판정 불가」로 남깁니다</td>
 </tr>
 <tr>
@@ -125,6 +125,7 @@ Python 패키지, Java, Git, GitHub 로그인, 스킬 저장소, 전사 공용 �
 2. 양식 카드를 고릅니다. `전사` 카드는 전사 공용 스킬이, `팀 · 부서 · 나만` 카드는 그 스킬을 상속한 스킬이 만듭니다.
 3. **초안 만들기** → 채팅으로 고치거나 설계도를 직접 고칩니다.
 4. 형식(한글 · PPT · 웹)을 골라 **문서 만들기** → 받기 · 미리보기 · 공유 범위 설정.
+5. 한글 **미리보기**는 만들어진 `.hwp` 파일을 브라우저 안에서 양식 그대로 그립니다(실패하면 양식을 본뜬 화면으로 대체). **한컴 뷰어로 열기** · **PowerPoint로 열기**를 누르면 실제 파일이 이 PC의 프로그램으로 열립니다.
 
 결과 파일마다 어떤 엔진과 스킬 버전으로 만들었는지 남습니다(예: `koscom-hwp-report@19bd93b · sales-common@1.0.0 ← sales-pack@1.5.1`).
 
@@ -278,7 +279,8 @@ kosoe-office/
 ├─ checks.py           팩 규칙 검수 · 원본값 대조 · 고정 문구 보장
 ├─ extract.py          첨부 읽기 (xlsx · pptx · docx · pdf · hwp · html · csv · txt)
 ├─ doctor.py           설치 점검
-├─ static/             화면 (index.html · views_skills.js · 서체 · Chart.js)
+├─ static/             화면 (index.html · views_skills.js · hwp_preview.js · 서체 · Chart.js)
+│  └─ vendor/rhwp/     한글 미리보기용 HWP 렌더러 (rhwp 0.8.7, WASM)
 ├─ seed/make_seed.py   시연용 가상 자료 생성
 ├─ tests/              엔진 연기 시험 · 스킬 빌더/검수 E2E · 시연 준비 · 녹화 도구
 └─ docs/               화면 그림 · 시연 영상
@@ -319,6 +321,7 @@ python tests/e2e_inspect.py       # 검수 · 재검사
 ## 알려진 한계와 다음 할 일
 
 - **한글 상세보고**(표지 · 목차)는 아직 만들지 않습니다. 요약보고만 됩니다.
+- **한글 미리보기**는 한컴 프로그램이 아니라 오픈소스 렌더러(rhwp)가 그립니다. 시험한 문서에서는 한컴 뷰어와 양식 · 표 · 쪽 수가 같게 나왔지만, PC에 함초롬 글꼴이 없으면 글자 간격과 줄바꿈이 조금 다를 수 있습니다. 최종 확인은 「한컴 뷰어로 열기」로 합니다.
 - **삽화 자동 배치**는 아직 없습니다. 삽화 스킬은 버전 고정과 수신까지만 연결돼 있습니다.
 - **전사 공용 스킬 갱신**(잠금 커밋 올리기)은 화면이 없어 스킬 저장소에 직접 PR을 올립니다.
 - **SSO · DRM 복호화 · 사내 LLM · 망 분리**는 시연용 흉내입니다. 가상 사용자를 고르고, DRM 문서는 감지만 하며, 「폐쇄망」 모드도 같은 구독 CLI를 씁니다(`KOSOE_CLOSED_LLM=rule`이면 규칙 기반만).
@@ -327,7 +330,7 @@ python tests/e2e_inspect.py       # 검수 · 재검사
 
 ## 데이터와 보안
 
-- 문서 · 첨부 · 작업 기록은 **이 PC**(`~/.kosoe`)에만 저장됩니다.
+- 문서 · 첨부 · 작업 기록은 **이 PC**(`~/.kosoe`)에만 저장됩니다. 한글 미리보기도 브라우저 안에서만 그리며 파일을 밖으로 보내지 않습니다.
 - AI를 쓰면 요청 문장과 첨부에서 읽은 글이 **본인의 Claude 구독**으로 전송됩니다. 인터넷망 모드에서는 주민등록번호 · 휴대전화번호 · 계좌번호 · 고객사명을 가린 뒤 보내고, 대외비 양식 · 문서는 잠깁니다.
 - 스킬 저장소에는 **원문 파일을 올리지 않습니다.** 구조 · 고정 문구 · 규칙과 검증 과제(대표 문서에서 뽑은 몇 줄 포함)만 올리고, 스킬 파일에 개인정보로 보이는 값이 있으면 등록이 막힙니다. 대표 문서는 가명 · 가상 자료로 준비하세요.
 - 사내 양식은 저장소 읽기 권한이 있는 사람의 PC에만 내려옵니다.
@@ -339,6 +342,7 @@ python tests/e2e_inspect.py       # 검수 · 재검사
 |---|---|---|
 | [hwplib](https://github.com/neolord0/hwplib) 1.1.9 | 한글 엔진(전사 스킬에 포함) | Apache License 2.0 |
 | ppt-master ([slide-master](https://github.com/byungjunjang/slide-master) 계열) | PPT 변환(전사 스킬에 포함) | MIT License |
+| [rhwp](https://github.com/edwardkim/rhwp) `@rhwp/core` 0.8.7 | 한글 미리보기 — `.hwp`를 브라우저 안에서 SVG로 그림 (`static/vendor/rhwp`) | MIT License |
 | [Chart.js](https://www.chartjs.org/) | 화면 · 웹슬라이드 차트 | MIT License |
 | KoPub돋움체 | 화면 · 문서 서체 | 한국출판인회의 배포 서체. 배포처의 사용 조건을 따릅니다 |
 | 코쇠 캐릭터 · 코스콤 색 · 셰브론 | 화면 · 문서 | 코스콤 자산. 회사 CI 사용 기준을 따릅니다 |

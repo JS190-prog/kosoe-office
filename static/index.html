@@ -189,6 +189,7 @@ pre.code{background:#0f1b33;color:#d6e2ff;padding:14px;border-radius:10px;font:1
 <div id="toast"></div>
 <script src="/static/chart.umd.min.js"></script>
 <script src="/static/views_skills.js"></script>
+<script src="/static/hwp_preview.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -471,7 +472,7 @@ function resHtml(doc) {
      <div class="small muted" style="margin-top:4px">🧩 ${esc(f.resolution?.engine?.name || '')}@${esc(f.resolution?.engine?.sha || '')}${(f.resolution?.skills || []).length ? ' · ' + f.resolution.skills.map(esc).join(' ← ') : ''}</div>
      <div style="margin-top:6px">${f.checks.map(c => `<div class="check"><span class="i ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '!'}</span><span class="grow">${esc(c.name)}${c.ok ? '' : `<br><span class="small muted">${esc(c.detail)}</span>`}</span></div>`).join('')}</div>
      <div class="row wrap" style="margin-top:8px"><a class="btn sm" href="/api/docs/${doc.id}/file?fmt=${f.fmt}&ver=${f.ver}">⬇ 받기</a>
-       <button class="btn ghost sm" onclick="preview('${doc.id}','${f.fmt}',${f.ver})">👁 미리보기</button></div></div>`).join('')}
+       <button class="btn ghost sm" onclick="preview('${doc.id}','${f.fmt}',${f.ver})">👁 미리보기</button>${launchBtn(doc.id, f.fmt, f.ver)}</div></div>`).join('')}
    ${fixable ? `<button class="btn" style="width:100%;justify-content:center" onclick="autoFix('${doc.id}')">🛠 검수 자동 수정 → 새 버전</button>` : ''}
    <button class="btn ghost" style="width:100%;justify-content:center;margin-top:8px" onclick="openDoc('${doc.id}')">👥 공유 범위 설정</button>`;
 }
@@ -497,12 +498,15 @@ async function preview(id, fmt, ver) {
     if (!f.shots.length) return modal('PPT 미리보기', `<div class="empty"><img src="/static/kosoe.webp" alt=""><p>슬라이드 그림을 만드는 중입니다. 잠시 뒤 다시 눌러 주세요.</p></div>`);
     return modal(`PPT 미리보기 <span class="small muted">v${ver} · ${f.shots.length}장 · ${f.shots[0].endsWith('.svg') ? '장별 SVG(같은 디자인 원본)' : 'PowerPoint 렌더'}</span>`, `<div class="shots">${f.shots.map(s => `<img src="/api/docs/${id}/shot/${ver}/${s}" alt="">`).join('')}</div>`, true);
   }
+  return previewHwp(id, ver);
+}
+async function previewHwpText(id, ver) {
   const d = await api(`/api/docs/${id}/text?ver=${ver}`);
   const L = d.lines;
   modal(`한글 문서 내용 <span class="small muted">v${ver} · .hwp에서 직접 읽은 문단</span>`, `<div class="hwpv"><div class="pg"><div class="t">${esc(L[0])}</div>
     <div class="small" style="text-align:right;color:#555">${esc(L[1] || '')}<br>${esc(L[2] || '')}</div>
     ${L.slice(3).map(l => l.startsWith('■') ? `<div class="s">${esc(l)}</div>` : `<div class="p">${esc(l)}</div>`).join('')}</div></div>
-    <p class="small muted" style="margin-top:10px">실제 모양은 받은 .hwp 파일을 한컴오피스로 열어 확인하세요. 이 화면은 파일에서 뽑은 텍스트입니다.</p>`, true);
+    <p class="small muted" style="margin-top:10px">실제 .hwp 파일에서 뽑은 문단입니다(파일에 무엇이 들어갔는지 확인용). <a href="#" onclick="previewHwp('${id}',${ver});return false">← 모양 미리보기로</a></p>`, true);
 }
 
 // ───────────── 문서함 ─────────────
@@ -525,7 +529,7 @@ async function openDoc(id) {
    ${updBanner(x)}<div class="row wrap" style="margin-bottom:12px">${gradeTag(x.grade)}<span class="chip">${esc(x.template)}</span><span class="chip">작성 ${esc(x.owner.name)} · ${esc(x.owner.team)}</span><span class="perm ${x.perm}">내 권한: ${PERM[x.perm]}</span>
      ${x.made?.minutes !== undefined ? `<span class="chip ok">⏱ ${x.made.minutes}분 걸림 (손으로 약 ${x.made.manual}분)</span>` : ''}</div>
    <div class="grid2"><div><h4 style="margin-bottom:8px">버전 · 파일</h4>
-     ${vers.map(v => `<div class="out-f"><b>v${v}</b> ${x.files.filter(f => f.ver === v).map(f => `<span style="margin-left:8px">${fmtTag(f.fmt)} <a href="/api/docs/${x.id}/file?fmt=${f.fmt}&ver=${v}">받기</a> · <a href="#" onclick="preview('${x.id}','${f.fmt}',${v});return false">보기</a> <span class="small muted">${f.checks.filter(c => !c.ok).length ? '검수 ' + f.checks.filter(c => !c.ok).length + '건' : '검수 통과'}</span></span>`).join('')}</div>`).join('') || '<p class="muted small">파일 없음</p>'}
+     ${vers.map(v => `<div class="out-f"><b>v${v}</b> ${x.files.filter(f => f.ver === v).map(f => `<span style="margin-left:8px">${fmtTag(f.fmt)} <a href="/api/docs/${x.id}/file?fmt=${f.fmt}&ver=${v}">받기</a> · <a href="#" onclick="preview('${x.id}','${f.fmt}',${v});return false">보기</a>${['hwp', 'ppt'].includes(f.fmt) ? ` · <a href="#" onclick="launchDoc('${x.id}','${f.fmt}',${v});return false">열기</a>` : ''} <span class="small muted">${f.checks.filter(c => !c.ok).length ? '검수 ' + f.checks.filter(c => !c.ok).length + '건' : '검수 통과'}</span></span>`).join('')}</div>`).join('') || '<p class="muted small">파일 없음</p>'}
      ${['m', 'w'].includes(x.perm) ? `<button class="btn" onclick="editDoc('${x.id}')">✍️ 이어서 편집</button>` : ''}</div>
    <div><h4 style="margin-bottom:8px">공유 범위 ${can ? '' : '<span class="small muted">(관리 권한자만 변경)</span>'}</h4>
      <div id="acl"></div>
