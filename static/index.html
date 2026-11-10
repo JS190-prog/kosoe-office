@@ -308,10 +308,14 @@ async function pickLLM() {
       <label><span>BizCoder 모델 <span class="muted">(회사 정책이 허용한 모델)</span></span>
         <select class="in" id="bz-model" ${d.bizcoder_models.length ? '' : 'disabled'}>${(d.bizcoder_models.length ? d.bizcoder_models : [c.bizcoder.model]).map(m =>
           `<option ${m === c.bizcoder.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
-      <label><span>Ollama 서버 주소 <span class="muted">(사내망 Ollama — 예: http://10.10.1.20:11434)</span></span>
-        <span class="row"><input class="in grow" id="ol-url" value="${esc(c.ollama.url)}"><button class="btn ghost sm" onclick="olLoad()">모델 불러오기</button></span></label>
+      <label><span>Ollama 서버 주소 <span class="muted">(사내 Ollama · ollama.com API — 예: https://llm.사내.kr, 로컬은 http://localhost:11434)</span></span>
+        <input class="in" id="ol-url" value="${esc(c.ollama.url)}"></label>
+      <label><span>API 키 <span class="muted">(인증이 걸린 서버만 — 로컬 Ollama는 비워 둠)</span></span>
+        <span class="row"><input class="in grow" id="ol-key" type="password" autocomplete="off" placeholder="${c.ollama.has_key ? `저장됨 (${esc(c.ollama.key_hint)}) — 바꿀 때만 입력` : '키 없음'}"><button class="btn ghost sm" onclick="olLoad()">모델 불러오기</button></span></label>
+      ${c.ollama.has_key ? '<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ol-key-clear"> 저장된 키 지우기</label>' : ''}
       <label>Ollama 모델 <select class="in" id="ol-model"><option value="${esc(c.ollama.model)}">${esc(c.ollama.model || '— 모델 불러오기를 누르세요 —')}</option></select></label>
       <div class="small muted" id="ol-st"></div>
+      <div class="small muted">API 키는 이 PC의 코쇠오피스 데이터에만 저장되고, 화면에는 끝 4자리만 보입니다. 서버 주소가 바뀌면 새로 넣어야 합니다. 키를 쓰면 https 주소를 권장합니다.</div>
       <div class="row" style="justify-content:flex-end"><button class="btn o sm" onclick="saveLLM()">설정 저장</button></div>
     </details>
     <p class="small muted" style="margin-top:6px">인터넷망에서는 외부 AI를 마스킹해서 씁니다. 여기서 고른 모델은 폐쇄망 문서 작성(초안·채팅 수정·검수 자동 수정)에 쓰입니다.</p>`);
@@ -321,7 +325,8 @@ async function olLoad(quiet) {      // 입력한 서버의 모델을 고르기 �
   const st = $('#ol-st'), sel = $('#ol-model'), cur = sel.value;
   st.textContent = '모델 목록을 불러오는 중…';
   try {
-    const d = await api('/api/ai/ollama/models?url=' + encodeURIComponent($('#ol-url').value.trim()), {quiet: true});
+    const f = llmForm().ollama;
+    const d = await api('/api/ai/ollama/models', {body: {url: f.url, key: f.key, key_clear: f.key_clear}, quiet: true});
     const opt = m => `<option value="${esc(m.name)}" ${m.name === cur ? 'selected' : ''}>${esc(m.name)}</option>`;
     const loc = d.models.filter(m => !m.cloud), cl = d.models.filter(m => m.cloud);
     sel.innerHTML = (cur && !d.models.some(m => m.name === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (서버에 없음)</option>` : '')
@@ -329,7 +334,8 @@ async function olLoad(quiet) {      // 입력한 서버의 모델을 고르기 �
     st.textContent = `연결됨 · 글쓰기 모델 ${loc.length}개${cl.length ? ` · 클라우드 ${cl.length}개` : ''}`;
   } catch (e) { st.textContent = '⚠ ' + e.message; if (!quiet) toast(e.message, true); }
 }
-const llmForm = () => ({bizcoder: $('#bz-model').disabled ? {} : {model: $('#bz-model').value}, ollama: {url: $('#ol-url').value.trim(), model: $('#ol-model').value}});
+const llmForm = () => ({bizcoder: $('#bz-model').disabled ? {} : {model: $('#bz-model').value},
+  ollama: {url: $('#ol-url').value.trim(), model: $('#ol-model').value, key: $('#ol-key').value.trim(), key_clear: !!$('#ol-key-clear')?.checked}});
 async function saveLLM() {
   await busy('사내 LLM 설정을 저장하는 중…', () => api('/api/ai/settings', {body: llmForm()}));
   toast('사내 LLM 설정을 저장했습니다'); await refreshMe(); pickLLM();

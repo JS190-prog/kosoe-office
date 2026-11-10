@@ -264,26 +264,40 @@ def _call_bizcoder(system, user, model=None):
 
 
 # ───────────── Ollama(사내망 모델 서버) ─────────────
-# 폐쇄망의 사내 모델 서버(Ollama)를 /api/chat 으로 부른다. 서버 주소·모델은 사용자가 화면 설정에서 정한다(ctx['cfg']).
+# 사내 모델 서버(Ollama · 인증 프록시 뒤의 Ollama · ollama.com API)를 /api/chat 으로 부른다.
+# 서버 주소·API 키·모델은 사용자가 화면 설정에서 정한다(ctx['cfg'] = {'url', 'key', 'model'}). 키는 Bearer 헤더로만 보낸다.
 _ol = {}
 
 
-def ollama_models(url):
+def _ol_req(cfg, path, body=None, timeout=5):
+    h = {'content-type': 'application/json', **({'authorization': 'Bearer ' + cfg['key']} if cfg.get('key') else {})}
+    req = urllib.request.Request(cfg['url'].rstrip('/') + path, data=json.dumps(body).encode() if body is not None else None, headers=h)
+    with urllib.request.urlopen(req, timeout=timeout, context=_ctx()) as r:
+        return json.loads(r.read().decode())
+
+
+def _ol_err(e, url):
+    if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+        return f'API 키를 확인해 주세요 (HTTP {e.code}, {url})'
+    return f'Ollama 서버에 연결할 수 없습니다 ({url}) — {str(e)[:80]}'
+
+
+def ollama_models(cfg):
     """서버의 글쓰기용 모델 [{'name', 'cloud'}] — 임베딩 전용은 뺀다. cloud = ollama.com 에서 도는 모델(문서가 PC 밖으로 나감)."""
-    with urllib.request.urlopen(url.rstrip('/') + '/api/tags', timeout=5, context=_ctx()) as r:
-        ms = json.loads(r.read().decode()).get('models') or []
+    ms = _ol_req(cfg, '/api/tags').get('models') or []
     # ponytail: 계열 이름으로 임베딩 모델을 거른다 — 틀리면 /api/show 의 capabilities 로
     return [{'name': m['name'], 'cloud': bool(m.get('remote_host'))} for m in ms
             if (m.get('details') or {}).get('family') not in ('bert', 'nomic-bert') and 'embed' not in m['name']]
 
 
-def ollama_status(url, model, force=False):
-    """{'ready', 'detail'} — 서버가 답하고 고른 모델이 있는지(30초 캐시)."""
-    k = (url, model)
+def ollama_status(cfg, force=False):
+    """{'ready', 'detail'} — 서버가 답하고(키 포함) 고른 모델이 있는지(30초 캐시)."""
+    k = (cfg['url'], cfg.get('model'), cfg.get('key'))
     if not force and k in _ol and time.time() - _ol[k][0] < 30:
         return _ol[k][1]
+    model = cfg.get('model') or ''
     try:
-        ms = {m['name']: m['cloud'] for m in ollama_models(url)}
+        ms = {m['name']: m['cloud'] for m in ollama_models(cfg)}
         name = model if model in ms else f'{model}:latest'
         if not model:
             v = {'ready': False, 'detail': '모델을 고르세요 (⚙ 설정)'}
@@ -292,7 +306,7 @@ def ollama_status(url, model, force=False):
         else:
             v = {'ready': True, 'detail': '연결됨' + (' · ☁ 클라우드 모델 — 문서가 PC 밖(ollama.com)으로 나갑니다' if ms[name] else '')}
     except Exception as e:
-        v = {'ready': False, 'detail': f'Ollama 서버에 연결할 수 없습니다 ({url}) — {str(e)[:80]}'}
+        v = {'ready': False, 'detail': _ol_err(e, cfg['url'])}
     _ol[k] = (time.time(), v)
     return v
 
@@ -306,19 +320,16 @@ def _call_ollama(system, user, cfg, json_mode=False):
             'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
     if json_mode:
         body['format'] = 'json'
-
-    def post(b):
-        req = urllib.request.Request(cfg['url'].rstrip('/') + '/api/chat', data=json.dumps(b).encode(), headers={'content-type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=600, context=_ctx()) as r:
-            return json.loads(r.read().decode())
     try:
-        d = post(body)
+        d = _ol_req(cfg, '/api/chat', body, timeout=600)
     except urllib.error.HTTPError as e:
         msg = e.read().decode(errors='ignore')[:200]
+        if e.code in (401, 403):
+            raise RuntimeError(_ol_err(e, cfg['url']))
         if 'think' not in msg:
             raise RuntimeError(f'Ollama HTTP {e.code}: {msg}')
         body.pop('think')                              # 생각 끄기를 받지 않는 모델(gpt-oss 등)은 그대로 부른다
-        d = post(body)
+        d = _ol_req(cfg, '/api/chat', body, timeout=600)
     text = re.sub(r'<think>.*?</think>', '', (d.get('message') or {}).get('content') or '', flags=re.S).strip()
     if not text:
         raise RuntimeError('Ollama: 빈 응답')
