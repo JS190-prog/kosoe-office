@@ -720,16 +720,12 @@ def _same(f, stem, att):
 
 def draft_post(bp, files):
     """기안문 설계도 마무리. 기안문 양식은 장 8개(추진 개요 ~ 기타 사항) 가운데 필요한 것만 쓰므로 내용 없는 장은 뺀다.
-    「1. 관련 근거」는 양식의 첫 항목이라 늘 둔다 — AI가 비우면 참고한 업로드 파일로, 파일도 없으면 「(확인 필요)」로 채운다.
+    관련 근거가 비면 그 장도 빠지고, 렌더러가 번호 없는 한 문장 「○○을 아래와 같이 추진하고자 합니다.」로 시작한다.
     참고한 업로드 파일은 첨부 목록에 빠짐없이 넣는다(AI가 빠뜨린 파일은 파일 이름으로 뒤에 붙인다)."""
     named = [(f, re.sub(r'\.\w{2,5}$', '', (f.get('name') or '').strip()).strip()) for f in files or []]
     named = [(f, stem) for f, stem in named if stem]
     secs = [s for s in bp['sections'] if s['items'] or s.get('table') or s.get('text')]
-    if not any('근거' in s['heading'] for s in secs):
-        secs.insert(0, {'heading': '관련 근거', 'table': None,
-                        'items': [{'label': '', 'text': re.sub(r'_+', ' ', stem), 'children': []} for _, stem in named]
-                        or [{'label': '', 'text': '(확인 필요)', 'children': []}]})
-    out = {**bp, 'sections': secs}
+    out = {**bp, 'sections': secs or bp['sections'][:1]}
     atts = [re.sub(r'_+', ' ', a) for a in bp.get('attachments') or []]     # 파일 이름의 밑줄은 문서에서 띄어쓰기로
     for f, stem in named:                           # 파일마다 첨부 한 줄: 없으면 붙이고, 제목 · 파일 이름으로 두 번 적혔으면 앞의 것만
         hit = [i for i, a in enumerate(atts) if _same(f, stem, a)]
@@ -1053,11 +1049,9 @@ if __name__ == '__main__':      # 자체검사(BizCoder 없이): 생각 끄기 �
         {'heading': '관련 근거', 'items': [], 'table': None}, {'heading': '추진 개요', 'items': [it], 'table': None},
         {'heading': '계약 사항', 'items': [], 'table': None}, {'heading': '소요 예산', 'items': [], 'table': None, 'text': '1,000원'}]},
         [{'name': '기획2026-1_계획.hwp'}, {'name': '시연메모_고객 세미나.txt'}, {'name': 'E증권(가상).pptx'}])
-    assert [s['heading'] for s in d['sections']] == ['관련 근거', '추진 개요', '소요 예산']
-    assert [x['text'] for x in d['sections'][0]['items']] == ['기획2026-1 계획', '시연메모 고객 세미나', 'E증권(가상)']   # AI가 비운 관련 근거 → 참고 파일
+    assert [s['heading'] for s in d['sections']] == ['추진 개요', '소요 예산']          # 빈 관련 근거도 빠짐(번호 없는 한 문장으로 시작)
     assert d['attachments'] == ['[기획2026-1] 기획2026-1 계획 (2026. 1. 2.) 1부', '시연메모 고객 세미나 1부', 'E증권(가상) 1부']
-    d = draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}]}, [])
-    assert 'attachments' not in d and d['sections'][0]['items'][0]['text'] == '(확인 필요)'            # 파일도 없으면 채울 자리 표시
+    assert 'attachments' not in draft_post({'title': 'T', 'sections': [{'heading': 'h', 'items': [it], 'table': None}]}, [])
     d = draft_post({'title': 'T', 'sections': [{'heading': '관련 근거', 'items': [dict(it, text='총무2026-1(2026. 1. 2. : 보고)')], 'table': None}]},
                    [{'name': 'a.txt'}])
     assert [x['text'] for x in d['sections'][0]['items']] == ['총무2026-1(2026. 1. 2. : 보고)']       # AI가 쓴 근거는 그대로
